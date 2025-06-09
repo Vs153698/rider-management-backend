@@ -174,6 +174,7 @@ const getChatList = catchAsync(async (req, res, next) => {
         title: ride.title,
         participants: ride.participants || [],
         creator: ride.creator,
+        avatar_url: ride.cover_image,
         lastMessage: lastMessage,
         unreadCount: unreadCount,
         updated_at: ride.updatedAt,
