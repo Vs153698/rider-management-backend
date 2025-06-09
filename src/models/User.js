@@ -142,6 +142,16 @@ module.exports = (sequelize) => {
       {
         fields: ['location'],
         using: 'gin'
+      },
+      {
+        fields: ['last_active']
+      },
+      {
+        fields: ['is_active']
+      },
+      // For search functionality
+      {
+        fields: ['first_name', 'last_name']
       }
     ]
   });
@@ -161,6 +171,27 @@ module.exports = (sequelize) => {
 
   User.prototype.getFullName = function() {
     return `${this.first_name} ${this.last_name}`;
+  };
+
+  User.prototype.isOnline = function() {
+    // Consider user online if last active within 5 minutes
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    return this.last_active > fiveMinutesAgo;
+  };
+
+  User.prototype.getPublicProfile = function() {
+    return {
+      id: this.id,
+      first_name: this.first_name,
+      last_name: this.last_name,
+      profile_picture: this.profile_picture,
+      bio: this.bio,
+      totalRides: this.totalRides,
+      totalDistance: this.totalDistance,
+      avg_rating: this.avg_rating,
+      last_active: this.last_active,
+      is_online: this.isOnline()
+    };
   };
 
   return User;

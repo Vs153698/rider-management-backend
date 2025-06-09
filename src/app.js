@@ -12,6 +12,7 @@ const groupRoutes = require('./routes/groups');
 const chatRoutes = require('./routes/chat');
 const rentalRoutes = require('./routes/rentals');
 const paymentRoutes = require('./routes/payments');
+const FriendSystem = require('./routes/FriendSystem');
 
 const app = express();
 
@@ -37,6 +38,8 @@ app.use('/api/groups', groupRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/rentals', rentalRoutes);
 app.use('/api/payments', paymentRoutes);
+app.use('/api/friends', FriendSystem);
+
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {

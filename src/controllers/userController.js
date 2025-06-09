@@ -3,6 +3,7 @@ const { AppError, catchAsync } = require('../middleware/errorHandler');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../config/cloudinary');
 const { cacheSet, cacheDel } = require('../config/redis');
 const { sanitizeUser, getPagination, getPagingData } = require('../utils/helpers');
+const { Op } = require('sequelize');
 
 // Get current user profile
 const getProfile = catchAsync(async (req, res, next) => {
@@ -217,6 +218,8 @@ const searchUsers = catchAsync(async (req, res, next) => {
     offset,
     order: [['first_name', 'ASC']]
   });
+
+  console.log("users",users);
 
   const response = getPagingData(users, page - 1, limitNum);
 
