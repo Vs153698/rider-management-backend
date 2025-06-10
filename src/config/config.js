@@ -14,7 +14,7 @@ module.exports = {
         rejectUnauthorized: false, // Use true in production with proper certificates
       },
     },
-    logging: console.log,
+    // logging: console.log,
     pool: {
       max: 10,
       min: 0,

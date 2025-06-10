@@ -162,7 +162,6 @@ const login = catchAsync(async (req, res, next) => {
     where: { phone_number },
     attributes: { include: ['password'] }
   });
-  console.log('Logging in user:', user);
 
   if (!user || !(await user.comparePassword(password))) {
     return next(new AppError('Invalid phone number or password', 401));

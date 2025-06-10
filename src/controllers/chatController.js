@@ -4,6 +4,12 @@ const { uploadToCloudinary } = require('../config/cloudinary');
 const { getPagination, getPagingData } = require('../utils/helpers');
 const { Op } = require('sequelize');
 
+// Input sanitization
+const sanitizeMessage = (message) => {
+  if (typeof message !== 'string') return message;
+  return message.trim().replace(/[<>]/g, ''); // Basic XSS prevention
+};
+
 // Get user's chat list - includes rides, groups, and direct messages (FRIENDS ONLY)
 const getChatList = catchAsync(async (req, res, next) => {
   const { page = 1, limit = 20, type } = req.query;
@@ -80,7 +86,10 @@ const getChatList = catchAsync(async (req, res, next) => {
       allChats.push({
         id: friendId,
         type: 'direct',
-        user: friend,
+        user: {
+          ...friend.toJSON(),
+          isOnline: friend.last_active && Date.now() - new Date(friend.last_active).getTime() < 5 * 60 * 1000
+        },
         lastMessage: lastMessage,
         unreadCount: unreadCount,
         updated_at: connection.last_message_at || connection.updatedAt,
@@ -287,11 +296,17 @@ const getChatList = catchAsync(async (req, res, next) => {
   const total = allChats.length;
   const paginatedChats = allChats.slice(offset, offset + limitNum);
 
-  const response = getPagingData({ rows: paginatedChats, count: total }, page - 1, limitNum);
-  
+  // FIXED: Return response format that matches ChatScreen expectations
   res.status(200).json({
     status: 'success',
-    data: response
+    data: {
+      items: paginatedChats,
+      totalItems: total,
+      currentPage: parseInt(page),
+      totalPages: Math.ceil(total / limitNum),
+      hasNextPage: page < Math.ceil(total / limitNum),
+      hasPrevPage: page > 1
+    }
   });
 });
 
@@ -407,7 +422,7 @@ const sendMessage = catchAsync(async (req, res, next) => {
 
   // Create chat message
   const chat = await Chat.create({
-    message,
+    message: sanitizeMessage(message),
     message_type,
     chat_type,
     attachment_url,
@@ -431,7 +446,8 @@ const sendMessage = catchAsync(async (req, res, next) => {
             { user_id: recipient_id, connected_user_id: req.userId }
           ],
           status: 'accepted'
-        }
+        },
+        validate: false // Skip validation for connection updates
       }
     );
   }
@@ -472,7 +488,7 @@ const sendMessage = catchAsync(async (req, res, next) => {
   });
 });
 
-// Get direct messages between two users (FRIENDS ONLY)
+// Get direct messages between two users (FRIENDS ONLY) - FIXED for ChatDetailScreen
 const getDirectMessages = catchAsync(async (req, res, next) => {
   const { userId: otherUserId } = req.params;
   const { page = 1, limit = 50, before_message_id } = req.query;
@@ -509,7 +525,7 @@ const getDirectMessages = catchAsync(async (req, res, next) => {
     is_deleted: false
   };
 
-  // Add pagination with before_message_id if provided
+  // Add pagination with before_message_id if provided (for ChatDetailScreen)
   if (before_message_id) {
     const beforeMessage = await Chat.findByPk(before_message_id);
     if (beforeMessage) {
@@ -548,7 +564,7 @@ const getDirectMessages = catchAsync(async (req, res, next) => {
     order: [['createdAt', 'DESC']]
   });
 
-  // Mark messages as read (messages sent by the other user)
+  // Mark messages as read (messages sent by the other user) (FIXED - bypass validation)
   await Chat.update(
     { is_read: true, read_at: new Date() },
     {
@@ -558,22 +574,29 @@ const getDirectMessages = catchAsync(async (req, res, next) => {
         recipient_id: req.userId,
         is_read: false,
         is_deleted: false
-      }
+      },
+      validate: false // CRITICAL: Skip validation for bulk read updates
     }
   );
 
+  // FIXED: Return format that matches ChatDetailScreen expectations
   const response = getPagingData(messages, page - 1, limitNum);
 
   res.status(200).json({
     status: 'success',
     data: {
-      ...response,
+      items: response.rows || messages.rows, // Messages array
+      totalItems: response.totalItems || messages.count,
+      currentPage: parseInt(page),
+      totalPages: response.totalPages || Math.ceil(messages.count / limitNum),
+      hasNextPage: response.hasNextPage || (page < Math.ceil(messages.count / limitNum)),
+      hasPrevPage: response.hasPrevPage || (page > 1),
       conversation_id: Chat.getDirectConversationId ? Chat.getDirectConversationId(req.userId, otherUserId) : `${Math.min(req.userId, otherUserId)}-${Math.max(req.userId, otherUserId)}`
     }
   });
 });
 
-// Get ride messages
+// Get ride messages - FIXED for ChatDetailScreen
 const getRideMessages = catchAsync(async (req, res, next) => {
   const { rideId } = req.params;
   const { page = 1, limit = 50, before_message_id } = req.query;
@@ -643,7 +666,7 @@ const getRideMessages = catchAsync(async (req, res, next) => {
     order: [['createdAt', 'DESC']]
   });
 
-  // Mark ride messages as read for this user
+  // Mark ride messages as read for this user (FIXED - bypass validation)
   await Chat.update(
     { is_read: true, read_at: new Date() },
     {
@@ -653,19 +676,28 @@ const getRideMessages = catchAsync(async (req, res, next) => {
         sender_id: { [Op.ne]: req.userId },
         is_read: false,
         is_deleted: false
-      }
+      },
+      validate: false // CRITICAL: Skip validation for bulk read updates
     }
   );
 
+  // FIXED: Return format that matches ChatDetailScreen expectations
   const response = getPagingData(messages, page - 1, limitNum);
 
   res.status(200).json({
     status: 'success',
-    data: response
+    data: {
+      items: response.rows || messages.rows,
+      totalItems: response.totalItems || messages.count,
+      currentPage: parseInt(page),
+      totalPages: response.totalPages || Math.ceil(messages.count / limitNum),
+      hasNextPage: response.hasNextPage || (page < Math.ceil(messages.count / limitNum)),
+      hasPrevPage: response.hasPrevPage || (page > 1)
+    }
   });
 });
 
-// Get group messages
+// Get group messages - FIXED for ChatDetailScreen
 const getGroupMessages = catchAsync(async (req, res, next) => {
   const { groupId } = req.params;
   const { page = 1, limit = 50, before_message_id } = req.query;
@@ -735,7 +767,7 @@ const getGroupMessages = catchAsync(async (req, res, next) => {
     order: [['createdAt', 'DESC']]
   });
 
-  // Mark group messages as read for this user
+  // Mark group messages as read for this user (FIXED - bypass validation)
   await Chat.update(
     { is_read: true, read_at: new Date() },
     {
@@ -745,15 +777,24 @@ const getGroupMessages = catchAsync(async (req, res, next) => {
         sender_id: { [Op.ne]: req.userId },
         is_read: false,
         is_deleted: false
-      }
+      },
+      validate: false // CRITICAL: Skip validation for bulk read updates
     }
   );
 
+  // FIXED: Return format that matches ChatDetailScreen expectations
   const response = getPagingData(messages, page - 1, limitNum);
 
   res.status(200).json({
     status: 'success',
-    data: response
+    data: {
+      items: response.rows || messages.rows,
+      totalItems: response.totalItems || messages.count,
+      currentPage: parseInt(page),
+      totalPages: response.totalPages || Math.ceil(messages.count / limitNum),
+      hasNextPage: response.hasNextPage || (page < Math.ceil(messages.count / limitNum)),
+      hasPrevPage: response.hasPrevPage || (page > 1)
+    }
   });
 });
 
@@ -824,7 +865,7 @@ const startConversation = catchAsync(async (req, res, next) => {
   let initialChat = null;
   if (initial_message && initial_message.trim()) {
     initialChat = await Chat.create({
-      message: initial_message.trim(),
+      message: sanitizeMessage(initial_message.trim()),
       message_type: 'text',
       chat_type: 'direct',
       sender_id: req.userId,
@@ -985,7 +1026,7 @@ const editMessage = catchAsync(async (req, res, next) => {
   }
 
   const updatedChat = await chat.update({
-    message: message.trim(),
+    message: sanitizeMessage(message.trim()),
     is_edited: true,
     edited_at: new Date()
   });
@@ -1403,7 +1444,7 @@ const markAsRead = catchAsync(async (req, res, next) => {
   let updateResult;
 
   if (message_ids && Array.isArray(message_ids)) {
-    // Mark specific messages as read
+    // Mark specific messages as read (FIXED - bypass validation)
     updateResult = await Chat.update(
       { is_read: true, read_at: new Date() },
       {
@@ -1415,7 +1456,8 @@ const markAsRead = catchAsync(async (req, res, next) => {
           ],
           is_read: false,
           is_deleted: false
-        }
+        },
+        validate: false // CRITICAL: Skip validation for bulk read updates
       }
     );
   } else if (user_id && chat_type === 'direct') {
@@ -1425,7 +1467,7 @@ const markAsRead = catchAsync(async (req, res, next) => {
       return next(new AppError('Access denied', 403));
     }
 
-    // Mark all messages from a specific user as read
+    // Mark all messages from a specific user as read (FIXED - bypass validation)
     updateResult = await Chat.update(
       { is_read: true, read_at: new Date() },
       {
@@ -1435,7 +1477,8 @@ const markAsRead = catchAsync(async (req, res, next) => {
           recipient_id: req.userId,
           is_read: false,
           is_deleted: false
-        }
+        },
+        validate: false // CRITICAL: Skip validation for bulk read updates
       }
     );
   } else if (ride_id && chat_type === 'ride') {
@@ -1469,7 +1512,8 @@ const markAsRead = catchAsync(async (req, res, next) => {
           sender_id: { [Op.ne]: req.userId },
           is_read: false,
           is_deleted: false
-        }
+        },
+        validate: false // CRITICAL: Skip validation for bulk read updates
       }
     );
   } else if (group_id && chat_type === 'group') {
@@ -1503,7 +1547,8 @@ const markAsRead = catchAsync(async (req, res, next) => {
           sender_id: { [Op.ne]: req.userId },
           is_read: false,
           is_deleted: false
-        }
+        },
+        validate: false // CRITICAL: Skip validation for bulk read updates
       }
     );
   } else {

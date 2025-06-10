@@ -115,7 +115,12 @@ module.exports = (sequelize) => {
 
   // Static methods
   UserConnection.findOrCreateConnection = async function(userId1, userId2, initiatedBy) {
-    // First check if any connection exists
+    // CRITICAL FIX: Validate self-connection BEFORE any database operations
+    if (userId1 === userId2) {
+      throw new Error('Cannot create connection with yourself');
+    }
+
+    // Check if any connection exists
     const existingConnection = await UserConnection.findOne({
       where: {
         [sequelize.Sequelize.Op.or]: [
@@ -130,6 +135,7 @@ module.exports = (sequelize) => {
     }
 
     // Create new connection (friend request)
+    // The model validation will also run as a backup
     return await UserConnection.create({
       user_id: userId1,
       connected_user_id: userId2,
@@ -139,6 +145,11 @@ module.exports = (sequelize) => {
   };
 
   UserConnection.areFriends = async function(userId1, userId2) {
+    // Add self-check validation
+    if (userId1 === userId2) {
+      return false; // You can't be friends with yourself
+    }
+
     const connection = await UserConnection.findOne({
       where: {
         [sequelize.Sequelize.Op.or]: [
@@ -153,6 +164,15 @@ module.exports = (sequelize) => {
   };
 
   UserConnection.getConnectionStatus = async function(userId1, userId2) {
+    // Add self-check validation
+    if (userId1 === userId2) {
+      return { 
+        status: 'self', 
+        connection: null, 
+        canChat: false 
+      };
+    }
+
     const connection = await UserConnection.findOne({
       where: {
         [sequelize.Sequelize.Op.or]: [
@@ -186,6 +206,11 @@ module.exports = (sequelize) => {
   };
 
   UserConnection.isBlocked = async function(userId1, userId2) {
+    // Add self-check validation
+    if (userId1 === userId2) {
+      return false; // You can't block yourself
+    }
+
     const connection = await UserConnection.findOne({
       where: {
         [sequelize.Sequelize.Op.or]: [

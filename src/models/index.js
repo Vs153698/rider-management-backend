@@ -208,7 +208,7 @@ const syncDatabase = async (options = {}) => {
     console.log('📝 Syncing junction tables...');
     await sequelize.sync({ 
       ...options, 
-      logging: process.env.NODE_ENV === 'development' ? console.log : false 
+      // logging: process.env.NODE_ENV === 'development' ? console.log : false 
     });
     console.log('✅ Junction tables synced');
 

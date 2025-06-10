@@ -24,61 +24,62 @@ const sendFriendRequest = catchAsync(async (req, res, next) => {
     return next(new AppError('User not found', 404));
   }
 
-  // Check if connection already exists
-  const existingConnection = await UserConnection.findOne({
-    where: {
-      [Op.or]: [
-        { user_id: req.userId, connected_user_id: user_id },
-        { user_id: user_id, connected_user_id: req.userId }
-      ]
+  // Use the safer findOrCreateConnection method instead of direct create
+  try {
+    const connection = await UserConnection.findOrCreateConnection(req.userId, user_id, req.userId);
+    
+    // Check the status of the returned connection
+    if (connection.status !== 'pending' || connection.initiated_by !== req.userId) {
+      let message = '';
+      switch (connection.status) {
+        case 'pending':
+          if (connection.initiated_by === req.userId) {
+            message = 'Friend request already sent';
+          } else {
+            message = 'This user has already sent you a friend request';
+          }
+          break;
+        case 'accepted':
+          message = 'You are already friends with this user';
+          break;
+        case 'blocked':
+          message = 'Cannot send friend request to this user';
+          break;
+        case 'rejected':
+          message = 'Friend request was previously rejected';
+          break;
+      }
+      return next(new AppError(message, 400));
     }
-  });
 
-  if (existingConnection) {
-    let message = '';
-    switch (existingConnection.status) {
-      case 'pending':
-        if (existingConnection.initiated_by === req.userId) {
-          message = 'Friend request already sent';
-        } else {
-          message = 'This user has already sent you a friend request';
-        }
-        break;
-      case 'accepted':
-        message = 'You are already friends with this user';
-        break;
-      case 'blocked':
-        message = 'Cannot send friend request to this user';
-        break;
-      case 'rejected':
-        message = 'Friend request was previously rejected';
-        break;
+    res.status(201).json({
+      status: 'success',
+      message: 'Friend request sent successfully',
+      data: {
+        user: targetUser,
+        connection_id: connection.id,
+        request_status: 'sent'
+      }
+    });
+  } catch (error) {
+    console.error('Error creating friend request:', error);
+    
+    if (error.message.includes('Cannot create connection with yourself')) {
+      return next(new AppError('Cannot send friend request to yourself', 400));
     }
-    return next(new AppError(message, 400));
+    
+    return next(new AppError('Failed to send friend request', 500));
   }
-
-  // Create friend request
-  const connection = await UserConnection.create({
-    user_id: req.userId,
-    connected_user_id: user_id,
-    initiated_by: req.userId,
-    status: 'pending'
-  });
-
-  res.status(201).json({
-    status: 'success',
-    message: 'Friend request sent successfully',
-    data: {
-      user: targetUser,
-      connection_id: connection.id,
-      request_status: 'sent'
-    }
-  });
 });
 
 // Accept friend request
 const acceptFriendRequest = catchAsync(async (req, res, next) => {
   const { user_id } = req.body;
+
+  // Add self-validation
+  if (user_id === req.userId) {
+    return next(new AppError('Cannot accept friend request from yourself', 400));
+  }
 
   // Find the pending friend request
   const connection = await UserConnection.findOne({
@@ -141,6 +142,11 @@ const acceptFriendRequest = catchAsync(async (req, res, next) => {
 const rejectFriendRequest = catchAsync(async (req, res, next) => {
   const { user_id } = req.body;
 
+  // Add self-validation
+  if (user_id === req.userId) {
+    return next(new AppError('Cannot reject friend request from yourself', 400));
+  }
+
   // Find the pending friend request
   const connection = await UserConnection.findOne({
     where: {
@@ -184,6 +190,11 @@ const rejectFriendRequest = catchAsync(async (req, res, next) => {
 const removeFriend = catchAsync(async (req, res, next) => {
   const { userId: friendId } = req.params;
 
+  // Add self-validation
+  if (friendId === req.userId) {
+    return next(new AppError('Cannot remove yourself as a friend', 400));
+  }
+
   // Find the friendship
   const connection = await UserConnection.findOne({
     where: {
@@ -222,42 +233,57 @@ const blockUser = catchAsync(async (req, res, next) => {
     return next(new AppError('User not found', 404));
   }
 
-  // Find or create connection
-  let connection = await UserConnection.findOne({
-    where: {
-      [Op.or]: [
-        { user_id: req.userId, connected_user_id: user_id },
-        { user_id: user_id, connected_user_id: req.userId }
-      ]
+  // Find or create connection using the safer method
+  try {
+    let connection = await UserConnection.findOne({
+      where: {
+        [Op.or]: [
+          { user_id: req.userId, connected_user_id: user_id },
+          { user_id: user_id, connected_user_id: req.userId }
+        ]
+      }
+    });
+
+    if (connection) {
+      // Update existing connection to blocked
+      await connection.update({
+        status: 'blocked',
+        blocked_at: new Date()
+      });
+    } else {
+      // Use findOrCreateConnection for safety, but force status to blocked
+      connection = await UserConnection.create({
+        user_id: req.userId,
+        connected_user_id: user_id,
+        initiated_by: req.userId,
+        status: 'blocked',
+        blocked_at: new Date()
+      });
     }
-  });
 
-  if (connection) {
-    // Update existing connection to blocked
-    await connection.update({
-      status: 'blocked',
-      blocked_at: new Date()
+    res.status(200).json({
+      status: 'success',
+      message: 'User blocked successfully'
     });
-  } else {
-    // Create new blocked connection
-    connection = await UserConnection.create({
-      user_id: req.userId,
-      connected_user_id: user_id,
-      initiated_by: req.userId,
-      status: 'blocked',
-      blocked_at: new Date()
-    });
+  } catch (error) {
+    console.error('Error blocking user:', error);
+    
+    if (error.message.includes('Cannot create connection with yourself')) {
+      return next(new AppError('Cannot block yourself', 400));
+    }
+    
+    return next(new AppError('Failed to block user', 500));
   }
-
-  res.status(200).json({
-    status: 'success',
-    message: 'User blocked successfully'
-  });
 });
 
 // Unblock user
 const unblockUser = catchAsync(async (req, res, next) => {
   const { user_id } = req.body;
+
+  // Add self-validation
+  if (user_id === req.userId) {
+    return next(new AppError('Cannot unblock yourself', 400));
+  }
 
   // Find the blocked connection
   const connection = await UserConnection.findOne({

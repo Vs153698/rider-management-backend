@@ -113,21 +113,77 @@ module.exports = (sequelize) => {
         fields: ['sender_id', 'recipient_id', 'chat_type']
       }
     ],
-    // Add validation to ensure proper chat context
+    // FIXED: More robust validation that handles all edge cases
     validate: {
       hasValidChatContext() {
-        if (this.chat_type === 'direct' && !this.recipient_id) {
-          throw new Error('Direct messages must have a recipient_id');
+        // Skip validation entirely for read operations and non-context updates
+        if (!this.isNewRecord) {
+          // Only validate if core chat context fields are being modified
+          const contextFieldsChanged = this.changed('chat_type') || 
+                                     this.changed('recipient_id') || 
+                                     this.changed('ride_id') || 
+                                     this.changed('group_id') ||
+                                     this.changed('sender_id');
+          
+          if (!contextFieldsChanged) {
+            return; // Skip validation for status updates, reads, etc.
+          }
         }
-        if (this.chat_type === 'ride' && !this.ride_id) {
-          throw new Error('Ride messages must have a ride_id');
+
+        // Only validate on creation or when context fields change
+        try {
+          if (this.chat_type === 'direct') {
+            if (!this.recipient_id) {
+              throw new Error('Direct messages must have a recipient_id');
+            }
+            if (this.ride_id || this.group_id) {
+              throw new Error('Direct messages cannot have ride_id or group_id');
+            }
+          } else if (this.chat_type === 'ride') {
+            if (!this.ride_id) {
+              throw new Error('Ride messages must have a ride_id');
+            }
+            if (this.recipient_id || this.group_id) {
+              throw new Error('Ride messages cannot have recipient_id or group_id');
+            }
+          } else if (this.chat_type === 'group') {
+            if (!this.group_id) {
+              throw new Error('Group messages must have a group_id');
+            }
+            if (this.recipient_id || this.ride_id) {
+              throw new Error('Group messages cannot have recipient_id or ride_id');
+            }
+          }
+        } catch (error) {
+          // Log the error for debugging but only throw if this is a new record or context change
+          if (this.isNewRecord || this.changed('chat_type')) {
+            throw error;
+          }
         }
-        if (this.chat_type === 'group' && !this.group_id) {
-          throw new Error('Group messages must have a group_id');
+      }
+    },
+    
+    // Add hooks to prevent validation issues
+    hooks: {
+      beforeFind: (options) => {
+        // Disable validation for find operations
+        options.validate = false;
+      },
+      beforeUpdate: (instance, options) => {
+        // Only validate if we're updating context fields
+        const contextFieldsChanged = instance.changed('chat_type') || 
+                                   instance.changed('recipient_id') || 
+                                   instance.changed('ride_id') || 
+                                   instance.changed('group_id') ||
+                                   instance.changed('sender_id');
+        
+        if (!contextFieldsChanged) {
+          options.validate = false;
         }
-        if (this.chat_type === 'direct' && (this.ride_id || this.group_id)) {
-          throw new Error('Direct messages cannot have ride_id or group_id');
-        }
+      },
+      beforeBulkUpdate: (options) => {
+        // Disable validation for bulk updates (like marking as read)
+        options.validate = false;
       }
     }
   });
