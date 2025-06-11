@@ -12,7 +12,7 @@ module.exports = (sequelize) => {
       allowNull: true
     },
     message_type: {
-      type: DataTypes.ENUM('text', 'image', 'location', 'file', 'voice'),
+      type: DataTypes.ENUM('text', 'image', 'location', 'file', 'voice','itinerary'),
       defaultValue: 'text'
     },
     chat_type: {
