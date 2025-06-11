@@ -1052,6 +1052,145 @@ const socketHandlers = (io) => {
       }
     });
 
+    socket.on('send_quick_status', async (data) => {
+  try {
+    console.log('📊 Quick status update received:', data);
+    
+    // Create message in database - USE socket.userId instead of data.sender_id
+    const message = await Chat.create({
+      message: data.message,
+      message_type: 'quick_status',
+      chat_type: data.chat_type,
+      sender_id: socket.userId,  // ✅ Use socket.userId from authenticated session
+      recipient_id: data.recipient_id,
+      ride_id: data.ride_id,
+      group_id: data.group_id,
+      metadata: data.metadata,
+      is_edited: false,
+      is_deleted: false,
+      is_read: false
+    });
+
+    // Fetch message with sender info
+    const messageWithSender = await Chat.findByPk(message.id, {
+      include: [{
+        model: User,
+        as: 'sender',
+        attributes: ['id', 'first_name', 'last_name', 'profile_picture']
+      }]
+    });
+
+    // Update user connection last_message_at
+    if (data.chat_type === 'direct') {
+      await UserConnection.update(
+        { last_message_at: new Date() },
+        {
+          where: {
+            [Op.or]: [
+              {
+                user_id: socket.userId,  // ✅ Use socket.userId here too
+                connected_user_id: data.recipient_id
+              },
+              {
+                user_id: data.recipient_id,
+                connected_user_id: socket.userId  // ✅ And here
+              }
+            ]
+          }
+        }
+      );
+    }
+
+    // Emit confirmation to sender
+    socket.emit('quick_status_sent', {
+      tempId: data.tempId,
+      id: message.id,
+      timestamp: message.createdAt
+    });
+
+    // Emit to relevant users based on chat type
+    if (data.chat_type === 'direct') {
+      // Direct message
+      const recipientSocketId = getSocketIdByUserId(data.recipient_id);
+      if (recipientSocketId) {
+        io.to(recipientSocketId).emit('new_message', messageWithSender);
+      }
+    } else if (data.chat_type === 'ride') {
+      // Ride chat - emit to all ride participants
+      const rideParticipants = await getRideParticipants(data.ride_id);
+      rideParticipants.forEach(participantId => {
+        if (participantId !== socket.userId) {  // ✅ Use socket.userId
+          const socketId = getSocketIdByUserId(participantId);
+          if (socketId) {
+            io.to(socketId).emit('new_message', messageWithSender);
+          }
+        }
+      });
+    } else if (data.chat_type === 'group') {
+      // Group chat - emit to all group members
+      const groupMembers = await getGroupMembers(data.group_id);
+      groupMembers.forEach(memberId => {
+        if (memberId !== socket.userId) {  // ✅ Use socket.userId
+          const socketId = getSocketIdByUserId(memberId);
+          if (socketId) {
+            io.to(socketId).emit('new_message', messageWithSender);
+          }
+        }
+      });
+    }
+
+    // Special handling for emergency status
+    if (data.metadata?.status?.needsHelp) {
+      console.log('🚨 Emergency status detected, sending alerts');
+      
+      const emergencyData = {
+        messageId: message.id,
+        userId: socket.userId,  // ✅ Use socket.userId
+        statusType: data.metadata.status.status,
+        statusTitle: data.metadata.status.title,
+        location: data.metadata.status.location,
+        timestamp: message.createdAt,
+        senderName: messageWithSender.sender.first_name + ' ' + messageWithSender.sender.last_name
+      };
+      
+      // Emit emergency alert to relevant users (same logic as message distribution)
+      if (data.chat_type === 'direct') {
+        const recipientSocketId = getSocketIdByUserId(data.recipient_id);
+        if (recipientSocketId) {
+          io.to(recipientSocketId).emit('emergency_alert', emergencyData);
+        }
+      } else if (data.chat_type === 'ride') {
+        const rideParticipants = await getRideParticipants(data.ride_id);
+        rideParticipants.forEach(participantId => {
+          if (participantId !== socket.userId) {  // ✅ Use socket.userId
+            const socketId = getSocketIdByUserId(participantId);
+            if (socketId) {
+              io.to(socketId).emit('emergency_alert', emergencyData);
+            }
+          }
+        });
+      } else if (data.chat_type === 'group') {
+        const groupMembers = await getGroupMembers(data.group_id);
+        groupMembers.forEach(memberId => {
+          if (memberId !== socket.userId) {  // ✅ Use socket.userId
+            const socketId = getSocketIdByUserId(memberId);
+            if (socketId) {
+              io.to(socketId).emit('emergency_alert', emergencyData);
+            }
+          }
+        });
+      }
+    }
+
+  } catch (error) {
+    console.error('Quick status error:', error);
+    socket.emit('quick_status_error', {
+      tempId: data.tempId,
+      error: error.message
+    });
+  }
+});
+
     // Handle live location updates during rides (throttled)
     let locationUpdateTimeout;
     socket.on("update_live_location", (data) => {
