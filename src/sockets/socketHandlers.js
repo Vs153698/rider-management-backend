@@ -1291,6 +1291,185 @@ socket.on("interact_with_itinerary", async (data) => {
   }
 });
 
+socket.on('direct_edit_itinerary', async (data) => {
+  console.log('🔧 DEBUG: Direct edit itinerary received:', JSON.stringify(data, null, 2));
+  
+  try {
+    const { message_id, edit_type, edit_data } = data;
+
+    // Find the original itinerary message
+    const chat = await Chat.findByPk(message_id, {
+      attributes: [
+        "id",
+        "metadata",
+        "chat_type",
+        "sender_id",
+        "recipient_id",
+        "ride_id",
+        "group_id",
+        "message_type",
+      ],
+    });
+
+    if (!chat || chat.message_type !== "itinerary") {
+      console.log('❌ DEBUG: Chat not found or not itinerary type');
+      return socket.emit("direct_edit_error", {
+        message: "Itinerary message not found",
+      });
+    }
+
+    // ✅ AUTHORIZATION: Only allow the original sender to directly edit
+    if (chat.sender_id !== socket.userId) {
+      return socket.emit("direct_edit_error", {
+        message: "Only the itinerary creator can directly edit this itinerary",
+      });
+    }
+
+    // Get current metadata
+    let metadata = {};
+    let itinerary = {};
+    
+    try {
+      if (typeof chat.metadata === 'string') {
+        metadata = JSON.parse(chat.metadata);
+      } else if (chat.metadata && typeof chat.metadata === 'object') {
+        metadata = chat.metadata;
+      }
+      
+      itinerary = metadata.itinerary || {};
+    } catch (parseError) {
+      console.error('❌ DEBUG: Error parsing metadata:', parseError);
+      return socket.emit("direct_edit_error", {
+        message: "Failed to parse itinerary data",
+      });
+    }
+
+    // Apply the edit based on edit_type
+    let updatedItinerary = { ...itinerary };
+    let changeDescription = '';
+
+    switch (edit_type) {
+      case 'update_title':
+        if (edit_data.title && edit_data.title.trim()) {
+          updatedItinerary.title = edit_data.title.trim();
+          changeDescription = `Title updated to "${edit_data.title.trim()}"`;
+        }
+        break;
+
+      case 'update_description':
+        updatedItinerary.description = edit_data.description || '';
+        changeDescription = 'Description updated';
+        break;
+
+      case 'update_destinations':
+        if (edit_data.destinations && Array.isArray(edit_data.destinations)) {
+          updatedItinerary.destinations = edit_data.destinations;
+          changeDescription = 'Destinations updated';
+        }
+        break;
+
+      case 'update_dates':
+        if (edit_data.startDate) updatedItinerary.startDate = edit_data.startDate;
+        if (edit_data.endDate) updatedItinerary.endDate = edit_data.endDate;
+        changeDescription = 'Dates updated';
+        break;
+
+      case 'update_cost':
+        if (edit_data.estimatedCost) updatedItinerary.estimatedCost = edit_data.estimatedCost;
+        changeDescription = 'Budget updated';
+        break;
+
+      default:
+        return socket.emit("direct_edit_error", {
+          message: "Unknown edit type",
+        });
+    }
+
+    // Add edit history
+    if (!updatedItinerary.editHistory) {
+      updatedItinerary.editHistory = [];
+    }
+
+    updatedItinerary.editHistory.push({
+      id: `edit_${Date.now()}_${socket.userId}`,
+      userId: socket.userId,
+      userName: `${socket.user.first_name} ${socket.user.last_name}`,
+      editType: edit_type,
+      description: changeDescription,
+      timestamp: new Date().toISOString(),
+      changes: edit_data
+    });
+
+    updatedItinerary.lastModified = new Date().toISOString();
+    updatedItinerary.lastModifiedBy = socket.userId;
+
+    // Prepare the complete updated metadata
+    const finalMetadata = {
+      ...metadata,
+      itinerary: updatedItinerary
+    };
+
+    console.log('🔧 DEBUG: About to update database with edited metadata');
+
+    // Update the database
+    const updateResult = await Chat.update(
+      { 
+        metadata: finalMetadata,
+        updated_at: new Date(),
+        message: `${updatedItinerary.title} (edited)` // Update message text to reflect edit
+      },
+      { 
+        where: { id: message_id },
+        validate: false,
+        silent: false
+      }
+    );
+
+    console.log('🔧 DEBUG: Database update result:', updateResult);
+
+    // Determine which room to broadcast to
+    let roomName;
+    if (chat.chat_type === "direct") {
+      roomName = `direct:${Chat.getDirectConversationId(chat.sender_id, chat.recipient_id)}`;
+    } else if (chat.chat_type === "ride") {
+      roomName = `ride:${chat.ride_id}`;
+    } else if (chat.chat_type === "group") {
+      roomName = `group:${chat.group_id}`;
+    }
+
+    // Broadcast the updated itinerary to all participants
+    const broadcastData = {
+      message_id: chat.id,
+      interaction_type: 'direct_edit',
+      edit_type: edit_type,
+      user_id: socket.userId,
+      user_name: socket.user.first_name,
+      itinerary: updatedItinerary,
+      change_description: changeDescription,
+      timestamp: new Date().toISOString(),
+    };
+
+    io.to(roomName).emit("itinerary_updated", broadcastData);
+
+    // Send success confirmation to editor
+    socket.emit("direct_edit_success", {
+      message_id: chat.id,
+      edit_type,
+      updatedItinerary: updatedItinerary,
+      change_description: changeDescription
+    });
+
+    console.log('✅ DEBUG: Direct edit completed successfully');
+
+  } catch (error) {
+    console.error("❌ DEBUG: Direct edit itinerary error:", error);
+    socket.emit("direct_edit_error", {
+      message: "Failed to edit itinerary",
+      error: error.message,
+    });
+  }
+});
+
 
         socket.on('send_quick_status', async (data) => {
       try {
