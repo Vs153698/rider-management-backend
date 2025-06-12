@@ -855,110 +855,110 @@ const socketHandlers = (io) => {
     });
 
     // Handle itinerary sharing
-    // socket.on("share_itinerary", async (data) => {
-    //   try {
-    //     const {
-    //       itinerary,
-    //       chat_type,
-    //       recipient_id,
-    //       ride_id,
-    //       group_id,
-    //       message,
-    //     } = data;
-
-    //     if (chat_type === "direct" && recipient_id === socket.userId) {
-    //       return socket.emit("itinerary_error", {
-    //         message: "Cannot share itinerary with yourself",
-    //       });
-    //     }
-
-    //     // Validate itinerary data
-    //     if (
-    //       !itinerary ||
-    //       !itinerary.title ||
-    //       !itinerary.destinations ||
-    //       !Array.isArray(itinerary.destinations)
-    //     ) {
-    //       return socket.emit("itinerary_error", {
-    //         message: "Invalid itinerary data",
-    //       });
-    //     }
-
-    //     let roomName;
-    //     if (chat_type === "direct") {
-    //       roomName = `direct:${Chat.getDirectConversationId(socket.userId, recipient_id)}`;
-    //     } else if (chat_type === "ride") {
-    //       roomName = `ride:${ride_id}`;
-    //     } else if (chat_type === "group") {
-    //       roomName = `group:${group_id}`;
-    //     }
-
-    //     // Create itinerary message
-    //     const chat = await Chat.create({
-    //       message: message || `Shared itinerary: ${itinerary.title}`,
-    //       message_type: "itinerary",
-    //       chat_type,
-    //       sender_id: socket.userId,
-    //       recipient_id,
-    //       ride_id,
-    //       group_id,
-    //       metadata: {
-    //         itinerary: {
-    //           id: itinerary.id || `itin_${Date.now()}`,
-    //           title: itinerary.title,
-    //           description: itinerary.description,
-    //           destinations: itinerary.destinations,
-    //           duration: itinerary.duration,
-    //           startDate: itinerary.startDate,
-    //           endDate: itinerary.endDate,
-    //           totalDistance: itinerary.totalDistance,
-    //           estimatedCost: itinerary.estimatedCost,
-    //           participants: itinerary.participants || [],
-    //           createdBy: socket.userId,
-    //           createdAt: new Date(),
-    //         },
-    //       },
-    //     });
-
-    //     const chatWithSender = await Chat.findByPk(chat.id, {
-    //       include: [
-    //         {
-    //           model: User,
-    //           as: "sender",
-    //           attributes: ["id", "first_name", "last_name", "profile_picture"],
-    //         },
-    //         {
-    //           model: User,
-    //           as: "recipient",
-    //           attributes: ["id", "first_name", "last_name", "profile_picture"],
-    //           required: false,
-    //         },
-    //       ],
-    //     });
-
-    //     io.to(roomName).emit("new_message", chatWithSender);
-
-    //     socket.emit("itinerary_shared", {
-    //       id: chat.id,
-    //       status: "success",
-    //     });
-    //   } catch (error) {
-    //     console.error("Share itinerary error:", error);
-    //     socket.emit("itinerary_error", {
-    //       message: "Failed to share itinerary",
-    //     });
-    //   }
-    // });
-
-    // Handle itinerary interactions (RSVP, comments, etc.)
-    socket.on("interact_with_itinerary", async (data) => {
+    socket.on("share_itinerary", async (data) => {
       try {
-        const { message_id, interaction_type, interaction_data } = data;
+        const {
+          itinerary,
+          chat_type,
+          recipient_id,
+          ride_id,
+          group_id,
+          message,
+        } = data;
+
+        if (chat_type === "direct" && recipient_id === socket.userId) {
+          return socket.emit("itinerary_error", {
+            message: "Cannot share itinerary with yourself",
+          });
+        }
+
+        // Validate itinerary data
+        if (
+          !itinerary ||
+          !itinerary.title ||
+          !itinerary.destinations ||
+          !Array.isArray(itinerary.destinations)
+        ) {
+          return socket.emit("itinerary_error", {
+            message: "Invalid itinerary data",
+          });
+        }
+
+        let roomName;
+        if (chat_type === "direct") {
+          roomName = `direct:${Chat.getDirectConversationId(socket.userId, recipient_id)}`;
+        } else if (chat_type === "ride") {
+          roomName = `ride:${ride_id}`;
+        } else if (chat_type === "group") {
+          roomName = `group:${group_id}`;
+        }
+
+        // Create itinerary message
+        const chat = await Chat.create({
+          message: message || `Shared itinerary: ${itinerary.title}`,
+          message_type: "itinerary",
+          chat_type,
+          sender_id: socket.userId,
+          recipient_id,
+          ride_id,
+          group_id,
+          metadata: {
+            itinerary: {
+              id: itinerary.id || `itin_${Date.now()}`,
+              title: itinerary.title,
+              description: itinerary.description,
+              destinations: itinerary.destinations,
+              duration: itinerary.duration,
+              startDate: itinerary.startDate,
+              endDate: itinerary.endDate,
+              totalDistance: itinerary.totalDistance,
+              estimatedCost: itinerary.estimatedCost,
+              participants: itinerary.participants || [],
+              createdBy: socket.userId,
+              createdAt: new Date(),
+            },
+          },
+        });
+
+        const chatWithSender = await Chat.findByPk(chat.id, {
+          include: [
+            {
+              model: User,
+              as: "sender",
+              attributes: ["id", "first_name", "last_name", "profile_picture"],
+            },
+            {
+              model: User,
+              as: "recipient",
+              attributes: ["id", "first_name", "last_name", "profile_picture"],
+              required: false,
+            },
+          ],
+        });
+
+        io.to(roomName).emit("new_message", chatWithSender);
+
+        socket.emit("itinerary_shared", {
+          id: chat.id,
+          status: "success",
+        });
+      } catch (error) {
+        console.error("Share itinerary error:", error);
+        socket.emit("itinerary_error", {
+          message: "Failed to share itinerary",
+        });
+      }
+    });
+
+    socket.on("manage_itinerary_suggestion", async (data) => {
+      try {
+        const { message_id, suggestion_id, action } = data; // action: 'approve' or 'reject'
 
         const chat = await Chat.findByPk(message_id, {
           attributes: [
             "id",
             "metadata",
+            "sender_id",
             "chat_type",
             "recipient_id",
             "ride_id",
@@ -966,62 +966,55 @@ const socketHandlers = (io) => {
           ],
         });
 
-        if (!chat || chat.message_type !== "itinerary") {
-          return socket.emit("itinerary_interaction_error", {
-            message: "Itinerary not found",
+        if (!chat || chat.sender_id !== socket.userId) {
+          return socket.emit("suggestion_management_error", {
+            message: "Not authorized to manage suggestions for this itinerary",
           });
         }
 
         const metadata = chat.metadata || {};
         const itinerary = metadata.itinerary || {};
 
-        switch (interaction_type) {
-          case "rsvp":
-            if (!itinerary.participants) itinerary.participants = [];
-
-            const existingRsvp = itinerary.participants.find(
-              (p) => p.userId === socket.userId
-            );
-            if (existingRsvp) {
-              existingRsvp.status = interaction_data.status;
-              existingRsvp.updatedAt = new Date();
-            } else {
-              itinerary.participants.push({
-                userId: socket.userId,
-                status: interaction_data.status, // 'going', 'maybe', 'not_going'
-                joinedAt: new Date(),
-              });
-            }
-            break;
-
-          case "suggest_destination":
-            if (!itinerary.suggestions) itinerary.suggestions = [];
-            itinerary.suggestions.push({
-              id: `sugg_${Date.now()}`,
-              userId: socket.userId,
-              type: "destination",
-              data: interaction_data,
-              createdAt: new Date(),
-            });
-            break;
-
-          case "suggest_edit":
-            if (!itinerary.suggestions) itinerary.suggestions = [];
-            itinerary.suggestions.push({
-              id: `sugg_${Date.now()}`,
-              userId: socket.userId,
-              type: "edit",
-              data: interaction_data,
-              createdAt: new Date(),
-            });
-            break;
+        if (!itinerary.suggestions) {
+          return socket.emit("suggestion_management_error", {
+            message: "No suggestions found",
+          });
         }
 
-        // Update the message metadata
+        // Find and update the suggestion
+        const suggestionIndex = itinerary.suggestions.findIndex(
+          (s) => s.id === suggestion_id
+        );
+        if (suggestionIndex === -1) {
+          return socket.emit("suggestion_management_error", {
+            message: "Suggestion not found",
+          });
+        }
+
+        const suggestion = itinerary.suggestions[suggestionIndex];
+        suggestion.status = action === "approve" ? "approved" : "rejected";
+        suggestion.reviewedAt = new Date().toISOString();
+        suggestion.reviewedBy = socket.userId;
+
+        // If approved, apply the suggestion to the itinerary
+        if (action === "approve" && suggestion.type === "suggest_edit") {
+          // Apply the suggested changes
+          if (suggestion.data.title) itinerary.title = suggestion.data.title;
+          if (suggestion.data.description)
+            itinerary.description = suggestion.data.description;
+          if (suggestion.data.destinations) {
+            // Merge or replace destinations based on suggestion
+            // This is a simplified version - you might want more complex merging logic
+            itinerary.destinations = suggestion.data.destinations;
+          }
+        }
+
+        // Update database
         await chat.update({
           metadata: { ...metadata, itinerary },
         });
 
+        // Determine room and notify all participants
         let roomName;
         if (chat.chat_type === "direct") {
           roomName = `direct:${Chat.getDirectConversationId(chat.sender_id, chat.recipient_id)}`;
@@ -1031,165 +1024,412 @@ const socketHandlers = (io) => {
           roomName = `group:${chat.group_id}`;
         }
 
-        // Emit updated itinerary to room
-        io.to(roomName).emit("itinerary_updated", {
+        io.to(roomName).emit("itinerary_suggestion_managed", {
           message_id: chat.id,
-          interaction_type,
-          user_id: socket.userId,
-          user_name: socket.user.first_name,
-          itinerary: itinerary,
+          suggestion_id,
+          action,
+          suggestion,
+          itinerary,
+          managed_by: `${socket.user.first_name} ${socket.user.last_name}`,
         });
 
-        socket.emit("itinerary_interaction_success", {
+        // Notify the suggestion author
+        io.to(`user:${suggestion.userId}`).emit("your_suggestion_reviewed", {
           message_id: chat.id,
-          interaction_type,
+          suggestion_id,
+          action,
+          itinerary_title: itinerary.title,
+          reviewed_by: `${socket.user.first_name} ${socket.user.last_name}`,
+        });
+
+        socket.emit("suggestion_management_success", {
+          message_id: chat.id,
+          suggestion_id,
+          action,
         });
       } catch (error) {
-        console.error("Itinerary interaction error:", error);
-        socket.emit("itinerary_interaction_error", {
-          message: "Failed to update itinerary",
+        console.error("Suggestion management error:", error);
+        socket.emit("suggestion_management_error", {
+          message: "Failed to manage suggestion",
         });
       }
     });
 
-//     socket.on('send_quick_status', async (data) => {
-//   try {
-//     console.log('📊 Quick status update received:', data);
+    // ✅ SOLUTION 1: Skip validation when updating metadata only
+socket.on("interact_with_itinerary", async (data) => {
+  console.log('🔧 DEBUG: Received interaction data:', JSON.stringify(data, null, 2));
+  
+  try {
+    const { message_id, interaction_type, interaction_data } = data;
+
+    // Find the original itinerary message
+    const chat = await Chat.findByPk(message_id, {
+      attributes: [
+        "id",
+        "metadata",
+        "chat_type",
+        "sender_id",
+        "recipient_id",
+        "ride_id",
+        "group_id",
+        "message_type",
+      ],
+    });
+
+    if (!chat || chat.message_type !== "itinerary") {
+      console.log('❌ DEBUG: Chat not found or not itinerary type');
+      return socket.emit("itinerary_interaction_error", {
+        message: "Itinerary message not found",
+      });
+    }
+
+    console.log('🔧 DEBUG: Found chat:', {
+      id: chat.id,
+      message_type: chat.message_type,
+      current_metadata: JSON.stringify(chat.metadata, null, 2)
+    });
+
+    // Get current metadata
+    let metadata = {};
+    let itinerary = {};
     
-//     // Create message in database - USE socket.userId instead of data.sender_id
-//     const message = await Chat.create({
-//       message: data.message,
-//       message_type: 'quick_status',
-//       chat_type: data.chat_type,
-//       sender_id: socket.userId,  // ✅ Use socket.userId from authenticated session
-//       recipient_id: data.recipient_id,
-//       ride_id: data.ride_id,
-//       group_id: data.group_id,
-//       metadata: data.metadata,
-//       is_edited: false,
-//       is_deleted: false,
-//       is_read: false
-//     });
-
-//     // Fetch message with sender info
-//     const messageWithSender = await Chat.findByPk(message.id, {
-//       include: [{
-//         model: User,
-//         as: 'sender',
-//         attributes: ['id', 'first_name', 'last_name', 'profile_picture']
-//       }]
-//     });
-
-//     // Update user connection last_message_at
-//     if(data.chat_type === 'direct' && data.recipient_id !== socket.userId) {
-//       await UserConnection.update(
-//         { last_message_at: new Date() },
-//         {
-//           where: {
-//             [Op.or]: [
-//               {
-//                 user_id: socket.userId,  // ✅ Use socket.userId here too
-//                 connected_user_id: data.recipient_id
-//               },
-//               {
-//                 user_id: data.recipient_id,
-//                 connected_user_id: socket.userId  // ✅ And here
-//               }
-//             ]
-//           }
-//         }
-//       );
-//     }
-
-//     // Emit confirmation to sender
-//     socket.emit('quick_status_sent', {
-//       tempId: data.tempId,
-//       id: message.id,
-//       timestamp: message.createdAt
-//     });
-
-//     // Emit to relevant users based on chat type
-//     if (data.chat_type === 'direct') {
-//       // Direct message
-//       const recipientSocketId = getSocketIdByUserId(data.recipient_id);
-//       if (recipientSocketId) {
-//         io.to(recipientSocketId).emit('new_message', messageWithSender);
-//       }
-//     } else if (data.chat_type === 'ride') {
-//       // Ride chat - emit to all ride participants
-//       const rideParticipants = await getRideParticipants(data.ride_id);
-//       rideParticipants.forEach(participantId => {
-//         if (participantId !== socket.userId) {  // ✅ Use socket.userId
-//           const socketId = getSocketIdByUserId(participantId);
-//           if (socketId) {
-//             io.to(socketId).emit('new_message', messageWithSender);
-//           }
-//         }
-//       });
-//     } else if (data.chat_type === 'group') {
-//       // Group chat - emit to all group members
-//       const groupMembers = await getGroupMembers(data.group_id);
-//       groupMembers.forEach(memberId => {
-//         if (memberId !== socket.userId) {  // ✅ Use socket.userId
-//           const socketId = getSocketIdByUserId(memberId);
-//           if (socketId) {
-//             io.to(socketId).emit('new_message', messageWithSender);
-//           }
-//         }
-//       });
-//     }
-
-//     // Special handling for emergency status
-//     if (data.metadata?.status?.needsHelp) {
-//       console.log('🚨 Emergency status detected, sending alerts');
+    try {
+      if (typeof chat.metadata === 'string') {
+        metadata = JSON.parse(chat.metadata);
+      } else if (chat.metadata && typeof chat.metadata === 'object') {
+        metadata = chat.metadata;
+      }
       
-//       const emergencyData = {
-//         messageId: message.id,
-//         userId: socket.userId,  // ✅ Use socket.userId
-//         statusType: data.metadata.status.status,
-//         statusTitle: data.metadata.status.title,
-//         location: data.metadata.status.location,
-//         timestamp: message.createdAt,
-//         senderName: messageWithSender.sender.first_name + ' ' + messageWithSender.sender.last_name
-//       };
-      
-//       // Emit emergency alert to relevant users (same logic as message distribution)
-//       if (data.chat_type === 'direct') {
-//         const recipientSocketId = getSocketIdByUserId(data.recipient_id);
-//         if (recipientSocketId) {
-//           io.to(recipientSocketId).emit('emergency_alert', emergencyData);
-//         }
-//       } else if (data.chat_type === 'ride') {
-//         const rideParticipants = await getRideParticipants(data.ride_id);
-//         rideParticipants.forEach(participantId => {
-//           if (participantId !== socket.userId) {  // ✅ Use socket.userId
-//             const socketId = getSocketIdByUserId(participantId);
-//             if (socketId) {
-//               io.to(socketId).emit('emergency_alert', emergencyData);
-//             }
-//           }
-//         });
-//       } else if (data.chat_type === 'group') {
-//         const groupMembers = await getGroupMembers(data.group_id);
-//         groupMembers.forEach(memberId => {
-//           if (memberId !== socket.userId) {  // ✅ Use socket.userId
-//             const socketId = getSocketIdByUserId(memberId);
-//             if (socketId) {
-//               io.to(socketId).emit('emergency_alert', emergencyData);
-//             }
-//           }
-//         });
-//       }
-//     }
+      itinerary = metadata.itinerary || {};
+      console.log('🔧 DEBUG: Parsed metadata successfully');
+    } catch (parseError) {
+      console.error('❌ DEBUG: Error parsing metadata:', parseError);
+      metadata = { itinerary: {} };
+      itinerary = {};
+    }
 
-//   } catch (error) {
-//     console.error('Quick status error:', error);
-//     socket.emit('quick_status_error', {
-//       tempId: data.tempId,
-//       error: error.message
-//     });
-//   }
-// });
+    // Ensure required arrays exist
+    if (!itinerary.participants) {
+      itinerary.participants = [];
+    }
+    if (!itinerary.suggestions) {
+      itinerary.suggestions = [];
+    }
+
+    console.log('🔧 DEBUG: Before interaction - participants:', itinerary.participants.length, 'suggestions:', itinerary.suggestions.length);
+
+    let responseData = null;
+    let updatedItinerary = { ...itinerary };
+
+    switch (interaction_type) {
+      case "rsvp":
+        const { status } = interaction_data;
+
+        if (!["going", "maybe", "not_going"].includes(status)) {
+          return socket.emit("itinerary_interaction_error", {
+            message: "Invalid RSVP status",
+          });
+        }
+
+        const existingParticipantIndex = updatedItinerary.participants.findIndex(
+          (p) => p.userId === socket.userId
+        );
+
+        const participantData = {
+          userId: socket.userId,
+          userName: `${socket.user.first_name} ${socket.user.last_name}`,
+          userAvatar: socket.user.profile_picture,
+          status: status,
+          updatedAt: new Date().toISOString(),
+        };
+
+        if (existingParticipantIndex >= 0) {
+          console.log('🔧 DEBUG: Updating existing participant at index:', existingParticipantIndex);
+          updatedItinerary.participants[existingParticipantIndex] = {
+            ...updatedItinerary.participants[existingParticipantIndex],
+            ...participantData,
+          };
+        } else {
+          console.log('🔧 DEBUG: Adding new participant');
+          participantData.joinedAt = new Date().toISOString();
+          updatedItinerary.participants.push(participantData);
+        }
+
+        responseData = {
+          userId: socket.userId,
+          userName: participantData.userName,
+          status: status,
+          participants: updatedItinerary.participants,
+        };
+
+        console.log(`📊 RSVP: ${socket.user.first_name} marked as ${status} for itinerary ${message_id}`);
+        break;
+
+      case "suggest_edit":
+        const suggestionText = interaction_data.suggestion || interaction_data.suggestionText;
+        
+        if (!suggestionText || !suggestionText.trim()) {
+          return socket.emit("itinerary_interaction_error", {
+            message: "Suggestion text is required",
+          });
+        }
+
+        const suggestionData = {
+          id: `sugg_${Date.now()}_${socket.userId}`,
+          userId: socket.userId,
+          userName: `${socket.user.first_name} ${socket.user.last_name}`,
+          userAvatar: socket.user.profile_picture,
+          type: "suggest_edit",
+          suggestion: suggestionText.trim(),
+          createdAt: new Date().toISOString(),
+          status: "pending",
+        };
+
+        updatedItinerary.suggestions.push(suggestionData);
+
+        responseData = {
+          suggestion: suggestionData,
+          suggestions: updatedItinerary.suggestions,
+        };
+
+        console.log(`💡 Suggestion: ${socket.user.first_name} suggested edit for itinerary ${message_id}: "${suggestionText}"`);
+        break;
+
+      default:
+        return socket.emit("itinerary_interaction_error", {
+          message: "Unknown interaction type",
+        });
+    }
+
+    // Prepare the complete updated metadata
+    const finalMetadata = {
+      ...metadata,
+      itinerary: updatedItinerary
+    };
+
+    console.log('🔧 DEBUG: About to update database with metadata:', JSON.stringify(finalMetadata, null, 2));
+
+    // ✅ FIX: Update with validation disabled for metadata-only changes
+    const updateResult = await Chat.update(
+      { 
+        metadata: finalMetadata,
+        updated_at: new Date()
+      },
+      { 
+        where: { id: message_id },
+        validate: false, // ✅ CRITICAL: Skip validation since we're only updating metadata
+        silent: false    // Still trigger hooks if needed
+      }
+    );
+
+    console.log('🔧 DEBUG: Database update result:', updateResult);
+
+    // Verify the update
+    const verifyChat = await Chat.findByPk(message_id, {
+      attributes: ["id", "metadata", "updated_at"]
+    });
+    
+    console.log('✅ DEBUG: Verification - Updated chat metadata:', JSON.stringify(verifyChat.metadata, null, 2));
+
+    // Determine which room to broadcast to
+    let roomName;
+    if (chat.chat_type === "direct") {
+      roomName = `direct:${Chat.getDirectConversationId(chat.sender_id, chat.recipient_id)}`;
+    } else if (chat.chat_type === "ride") {
+      roomName = `ride:${chat.ride_id}`;
+    } else if (chat.chat_type === "group") {
+      roomName = `group:${chat.group_id}`;
+    }
+
+    console.log('🔧 DEBUG: Broadcasting to room:', roomName);
+
+    // Emit updated itinerary to all participants in the room
+    const broadcastData = {
+      message_id: chat.id,
+      interaction_type,
+      user_id: socket.userId,
+      user_name: socket.user.first_name,
+      itinerary: updatedItinerary,
+      timestamp: new Date().toISOString(),
+      ...responseData,
+    };
+
+    io.to(roomName).emit("itinerary_updated", broadcastData);
+
+    // Send success confirmation
+    socket.emit("itinerary_interaction_success", {
+      message_id: chat.id,
+      interaction_type,
+      data: responseData,
+      updatedItinerary: updatedItinerary,
+    });
+
+    // Special handling for suggestions - notify the itinerary creator
+    if (
+      interaction_type.includes("suggest") &&
+      chat.sender_id !== socket.userId
+    ) {
+      io.to(`user:${chat.sender_id}`).emit(
+        "itinerary_suggestion_received",
+        {
+          message_id: chat.id,
+          suggestion: responseData.suggestion,
+          itinerary_title: updatedItinerary.title,
+          from_user: `${socket.user.first_name} ${socket.user.last_name}`,
+        }
+      );
+    }
+
+    console.log('✅ DEBUG: Interaction completed successfully');
+
+  } catch (error) {
+    console.error("❌ DEBUG: Itinerary interaction error:", error);
+    socket.emit("itinerary_interaction_error", {
+      message: "Failed to update itinerary",
+      error: error.message,
+    });
+  }
+});
+
+
+        socket.on('send_quick_status', async (data) => {
+      try {
+        console.log('📊 Quick status update received:', data);
+
+        // Create message in database - USE socket.userId instead of data.sender_id
+        const message = await Chat.create({
+          message: data.message,
+          message_type: 'quick_status',
+          chat_type: data.chat_type,
+          sender_id: socket.userId,  // ✅ Use socket.userId from authenticated session
+          recipient_id: data.recipient_id,
+          ride_id: data.ride_id,
+          group_id: data.group_id,
+          metadata: data.metadata,
+          is_edited: false,
+          is_deleted: false,
+          is_read: false
+        });
+
+        // Fetch message with sender info
+        const messageWithSender = await Chat.findByPk(message.id, {
+          include: [{
+            model: User,
+            as: 'sender',
+            attributes: ['id', 'first_name', 'last_name', 'profile_picture']
+          }]
+        });
+
+        // Update user connection last_message_at
+        if(data.chat_type === 'direct' && data.recipient_id !== socket.userId) {
+          await UserConnection.update(
+            { last_message_at: new Date() },
+            {
+              where: {
+                [Op.or]: [
+                  {
+                    user_id: socket.userId,  // ✅ Use socket.userId here too
+                    connected_user_id: data.recipient_id
+                  },
+                  {
+                    user_id: data.recipient_id,
+                    connected_user_id: socket.userId  // ✅ And here
+                  }
+                ]
+              }
+            }
+          );
+        }
+
+        // Emit confirmation to sender
+        socket.emit('quick_status_sent', {
+          tempId: data.tempId,
+          id: message.id,
+          timestamp: message.createdAt
+        });
+
+        // Emit to relevant users based on chat type
+        if (data.chat_type === 'direct') {
+          // Direct message
+          const recipientSocketId = getSocketIdByUserId(data.recipient_id);
+          if (recipientSocketId) {
+            io.to(recipientSocketId).emit('new_message', messageWithSender);
+          }
+        } else if (data.chat_type === 'ride') {
+          // Ride chat - emit to all ride participants
+          const rideParticipants = await getRideParticipants(data.ride_id);
+          rideParticipants.forEach(participantId => {
+            if (participantId !== socket.userId) {  // ✅ Use socket.userId
+              const socketId = getSocketIdByUserId(participantId);
+              if (socketId) {
+                io.to(socketId).emit('new_message', messageWithSender);
+              }
+            }
+          });
+        } else if (data.chat_type === 'group') {
+          // Group chat - emit to all group members
+          const groupMembers = await getGroupMembers(data.group_id);
+          groupMembers.forEach(memberId => {
+            if (memberId !== socket.userId) {  // ✅ Use socket.userId
+              const socketId = getSocketIdByUserId(memberId);
+              if (socketId) {
+                io.to(socketId).emit('new_message', messageWithSender);
+              }
+            }
+          });
+        }
+
+        // Special handling for emergency status
+        if (data.metadata?.status?.needsHelp) {
+          console.log('🚨 Emergency status detected, sending alerts');
+
+          const emergencyData = {
+            messageId: message.id,
+            userId: socket.userId,  // ✅ Use socket.userId
+            statusType: data.metadata.status.status,
+            statusTitle: data.metadata.status.title,
+            location: data.metadata.status.location,
+            timestamp: message.createdAt,
+            senderName: messageWithSender.sender.first_name + ' ' + messageWithSender.sender.last_name
+          };
+
+          // Emit emergency alert to relevant users (same logic as message distribution)
+          if (data.chat_type === 'direct') {
+            const recipientSocketId = getSocketIdByUserId(data.recipient_id);
+            if (recipientSocketId) {
+              io.to(recipientSocketId).emit('emergency_alert', emergencyData);
+            }
+          } else if (data.chat_type === 'ride') {
+            const rideParticipants = await getRideParticipants(data.ride_id);
+            rideParticipants.forEach(participantId => {
+              if (participantId !== socket.userId) {  // ✅ Use socket.userId
+                const socketId = getSocketIdByUserId(participantId);
+                if (socketId) {
+                  io.to(socketId).emit('emergency_alert', emergencyData);
+                }
+              }
+            });
+          } else if (data.chat_type === 'group') {
+            const groupMembers = await getGroupMembers(data.group_id);
+            groupMembers.forEach(memberId => {
+              if (memberId !== socket.userId) {  // ✅ Use socket.userId
+                const socketId = getSocketIdByUserId(memberId);
+                if (socketId) {
+                  io.to(socketId).emit('emergency_alert', emergencyData);
+                }
+              }
+            });
+          }
+        }
+
+      } catch (error) {
+        console.error('Quick status error:', error);
+        socket.emit('quick_status_error', {
+          tempId: data.tempId,
+          error: error.message
+        });
+      }
+    });
 
     // Handle live location updates during rides (throttled)
     let locationUpdateTimeout;
