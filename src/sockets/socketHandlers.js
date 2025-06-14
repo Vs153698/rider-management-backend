@@ -1610,6 +1610,409 @@ socket.on('direct_edit_itinerary', async (data) => {
       }
     });
 
+socket.on('send_fuel_status', async (data) => {
+  try {
+    console.log('📊 Fuel status update received:', data);
+
+    // OPTIMIZATION 1: Quick validation first (no DB calls) - same as send_message handler
+    const {
+      message: messageText,
+      chatType = 'direct',  // Use chatType to match your frontend
+      recipient_id,
+      ride_id,
+      group_id,
+      fuelLevel,
+      tankCapacity,
+      fuelEfficiency,
+      estimatedRange,
+      title,
+      description,
+      isUrgent,
+      needsHelp,
+      color,
+      icon,
+      customMessage,
+      timestamp,
+      tempId
+    } = data;
+
+    // Validate chat type requirements - same logic as send_message
+    if (chatType === "direct") {
+      if (!recipient_id) {
+        return socket.emit("fuel_status_error", {
+          tempId: tempId,
+          message: "Recipient ID required for direct messages",
+        });
+      }
+      if (recipient_id === socket.userId) {
+        return socket.emit("fuel_status_error", {
+          tempId: tempId,
+          message: "Cannot send fuel status to yourself",
+        });
+      }
+    } else if (chatType === "ride" && !ride_id) {
+      return socket.emit("fuel_status_error", {
+        tempId: tempId,
+        message: "Ride ID required for ride messages",
+      });
+    } else if (chatType === "group" && !group_id) {
+      return socket.emit("fuel_status_error", {
+        tempId: tempId,
+        message: "Group ID required for group messages",
+      });
+    }
+
+    // OPTIMIZATION 2: Handle different chat types with cached authorization (same as send_message)
+    let roomName;
+    let connectionUpdatePromise = Promise.resolve();
+
+    if (chatType === "direct") {
+      const cacheKey = `connection:${socket.userId}:${recipient_id}`;
+      let connection = connectionCache.get(cacheKey);
+
+      if (!connection) {
+        // Try Redis cache first
+        connection = await cacheGet(cacheKey);
+        if (!connection) {
+          connection = await UserConnection.findOne({
+            where: {
+              user_id: socket.userId,
+              connected_user_id: recipient_id,
+              status: { [Op.ne]: "blocked" },
+            },
+            attributes: ["id", "status", "last_message_at"],
+          });
+
+          if (connection) {
+            await cacheSet(cacheKey, connection, 300);
+          }
+        }
+
+        if (connection) {
+          connectionCache.set(cacheKey, connection);
+        }
+      }
+
+      if (!connection) {
+        // Auto-create connection asynchronously
+        try {
+          connection = await UserConnection.findOrCreateConnection(
+            socket.userId,
+            recipient_id,
+            socket.userId
+          );
+          if (connection) {
+            await cacheSet(cacheKey, connection, 300);
+            connectionCache.set(cacheKey, connection);
+          }
+        } catch (error) {
+          if (
+            error.name === "SequelizeValidationError" &&
+            error.errors.some(
+              (e) => e.validatorKey === "cannotConnectToSelf"
+            )
+          ) {
+            return socket.emit("fuel_status_error", {
+              tempId: tempId,
+              message: "Cannot send fuel status to yourself",
+            });
+          }
+          return socket.emit("fuel_status_error", {
+            tempId: tempId,
+            message: "Failed to create connection",
+          });
+        }
+      }
+
+      roomName = `direct:${Chat.getDirectConversationId(socket.userId, recipient_id)}`;
+
+      // Prepare connection update (don't await yet)
+      connectionUpdatePromise = UserConnection.update(
+        { last_message_at: new Date() },
+        {
+          where: {
+            [Op.or]: [
+              { user_id: socket.userId, connected_user_id: recipient_id },
+              { user_id: recipient_id, connected_user_id: socket.userId },
+            ],
+          },
+          validate: false,
+        }
+      );
+    } else if (chatType === "ride") {
+      const membershipKey = `ride:${ride_id}:${socket.userId}`;
+      let isMember = roomMembershipCache.get(membershipKey);
+
+      if (isMember === undefined) {
+        const ride = await Ride.findByPk(ride_id, {
+          attributes: ["id", "creator_id"],
+          include: [
+            {
+              model: User,
+              as: "participants",
+              where: { id: socket.userId },
+              required: false,
+              attributes: ["id"],
+            },
+          ],
+        });
+
+        isMember =
+          ride &&
+          (ride.creator_id === socket.userId ||
+            (ride.participants && ride.participants.length > 0));
+
+        roomMembershipCache.set(membershipKey, isMember);
+      }
+
+      if (!isMember) {
+        return socket.emit("fuel_status_error", {
+          tempId: tempId,
+          message: "Not authorized to send fuel status in this ride",
+        });
+      }
+      roomName = `ride:${ride_id}`;
+    } else if (chatType === "group") {
+      const membershipKey = `group:${group_id}:${socket.userId}`;
+      let isMember = roomMembershipCache.get(membershipKey);
+
+      if (isMember === undefined) {
+        const group = await Group.findByPk(group_id, {
+          attributes: ["id", "admin_id"],
+          include: [
+            {
+              model: User,
+              as: "members",
+              where: { id: socket.userId },
+              required: false,
+              attributes: ["id"],
+            },
+          ],
+        });
+
+        isMember =
+          group &&
+          (group.admin_id === socket.userId ||
+            (group.members && group.members.length > 0));
+
+        roomMembershipCache.set(membershipKey, isMember);
+      }
+
+      if (!isMember) {
+        return socket.emit("fuel_status_error", {
+          tempId: tempId,
+          message: "Not authorized to send fuel status in this group",
+        });
+      }
+      roomName = `group:${group_id}`;
+    }
+
+    // OPTIMIZATION 3: Send immediate confirmation to sender (optimistic UI)
+    const tempMessageId = tempId || `temp_${Date.now()}_${socket.userId}`;
+    socket.emit("fuel_status_sent", {
+      id: tempMessageId,
+      tempId: tempMessageId,
+      status: "sending",
+      timestamp: new Date(),
+    });
+
+    // Create message in database
+    const chatMessage = await Chat.create({
+      message: messageText || customMessage || `⛽ Fuel: ${fuelLevel}%`,
+      message_type: 'fuel_status',
+      chat_type: chatType,
+      sender_id: socket.userId,
+      recipient_id: recipient_id,
+      ride_id: ride_id,
+      group_id: group_id,
+      metadata: {
+        fuelStatus: {
+          fuelLevel: fuelLevel,
+          tankCapacity: tankCapacity,
+          fuelEfficiency: fuelEfficiency,
+          estimatedRange: estimatedRange,
+          title: title,
+          description: description,
+          isUrgent: isUrgent,
+          needsHelp: needsHelp,
+          color: color,
+          icon: icon,
+          customMessage: customMessage,
+          timestamp: timestamp || new Date().toISOString(),
+          userId: socket.userId
+        }
+      },
+      is_edited: false,
+      is_deleted: false,
+      is_read: false
+    });
+
+    if (!chatMessage || !chatMessage.id) {
+      return socket.emit("fuel_status_error", {
+        tempId: tempMessageId,
+        message: "Failed to create fuel status message",
+      });
+    }
+
+    // OPTIMIZATION 4: Parallel operations - fetch user data and update connection
+    const [messageWithSender] = await Promise.all([
+      Chat.findByPk(chatMessage.id, {
+        include: [
+          {
+            model: User,
+            as: "sender",
+            attributes: [
+              "id",
+              "first_name",
+              "last_name",
+              "profile_picture",
+            ],
+          },
+          {
+            model: User,
+            as: "recipient",
+            attributes: [
+              "id",
+              "first_name",
+              "last_name",
+              "profile_picture",
+            ],
+            required: false,
+          },
+        ],
+      }),
+      connectionUpdatePromise, // Update connection timestamp in parallel
+    ]);
+
+    // OPTIMIZATION 5: Emit to rooms immediately
+    io.to(roomName).emit("new_message", messageWithSender);
+
+    // For direct messages, also notify the recipient's personal room
+    if (chatType === "direct") {
+      io.to(`user:${recipient_id}`).emit("new_direct_message", {
+        ...messageWithSender.toJSON(),
+        conversation_id: Chat.getDirectConversationId(
+          socket.userId,
+          recipient_id
+        ),
+      });
+    }
+
+    // Send final confirmation to sender with real ID
+    socket.emit("fuel_status_sent", {
+      id: chatMessage.id,
+      tempId: tempMessageId,
+      status: "success",
+      timestamp: chatMessage.createdAt,
+    });
+
+    // Special handling for critical fuel status (below 15%)
+    if (needsHelp && fuelLevel <= 15) {
+      console.log('🚨 Critical fuel alert detected, sending emergency notifications');
+
+      const emergencyData = {
+        messageId: chatMessage.id,
+        userId: socket.userId,
+        fuelLevel: fuelLevel,
+        estimatedRange: estimatedRange,
+        statusTitle: title,
+        location: data.location, // If location is shared
+        timestamp: chatMessage.createdAt,
+        senderName: messageWithSender.sender.first_name + ' ' + messageWithSender.sender.last_name,
+        urgency: 'critical'
+      };
+
+      // Emit critical fuel alert to the same room
+      io.to(roomName).emit('critical_fuel_alert', emergencyData);
+    }
+
+  } catch (error) {
+    console.error('Fuel status error:', error);
+
+    if (
+      error.name === "SequelizeValidationError" &&
+      error.errors.some((e) => e.validatorKey === "cannotConnectToSelf")
+    ) {
+      socket.emit("fuel_status_error", {
+        tempId: data.tempId,
+        message: "Cannot send fuel status to yourself",
+      });
+    } else if (error.name === "SequelizeForeignKeyConstraintError") {
+      socket.emit("fuel_status_error", {
+        tempId: data.tempId,
+        message: "Invalid recipient or chat reference",
+      });
+    } else {
+      socket.emit("fuel_status_error", {
+        tempId: data.tempId,
+        error: error.message,
+        message: "Failed to send fuel status",
+      });
+    }
+  }
+});
+
+// Add fuel help offer handler
+socket.on('offer_fuel_help', async (data) => {
+  try {
+    const { message_id, help_type, helper_message } = data;
+
+    // Find the original fuel status message
+    const originalMessage = await Chat.findByPk(message_id, {
+      include: [{
+        model: User,
+        as: 'sender',
+        attributes: ['id', 'first_name', 'last_name', 'profile_picture']
+      }]
+    });
+
+    if (!originalMessage) {
+      return socket.emit('fuel_help_offer_error', {
+        message: 'Original fuel status message not found'
+      });
+    }
+
+    // Create help offer record (optional - for tracking)
+    const helpOffer = await FuelHelpOffer.create({
+      original_message_id: message_id,
+      helper_id: socket.userId,
+      needs_help_user_id: originalMessage.sender_id,
+      help_type: help_type || 'general',
+      message: helper_message,
+      status: 'pending',
+      offered_at: new Date()
+    });
+
+    // Notify the person who needs help
+    const helperInfo = await User.findByPk(socket.userId, {
+      attributes: ['id', 'first_name', 'last_name', 'profile_picture']
+    });
+
+    io.to(`user:${originalMessage.sender_id}`).emit('fuel_help_offered', {
+      helper: helperInfo,
+      helpMessage: helper_message,
+      helpType: help_type,
+      originalMessageId: message_id,
+      fuelLevel: originalMessage.metadata?.fuelStatus?.fuelLevel,
+      offerId: helpOffer.id
+    });
+
+    // Send confirmation to helper
+    socket.emit('fuel_help_offer_sent', {
+      success: true,
+      needsHelpUserName: `${originalMessage.sender.first_name} ${originalMessage.sender.last_name}`,
+      offerId: helpOffer.id
+    });
+
+  } catch (error) {
+    console.error('Fuel help offer error:', error);
+    socket.emit('fuel_help_offer_error', {
+      error: error.message
+    });
+  }
+});
+
+
     // Handle live location updates during rides (throttled)
     let locationUpdateTimeout;
     socket.on("update_live_location", (data) => {
@@ -1897,6 +2300,62 @@ socket.on('direct_edit_itinerary', async (data) => {
       }
     });
   }
+
+  // Helper functions (add these to your existing helper functions)
+async function getRideParticipants(rideId) {
+  try {
+    const ride = await Ride.findByPk(rideId, {
+      include: [{
+        model: User,
+        as: 'participants',
+        attributes: ['id']
+      }]
+    });
+    
+    if (!ride) return [];
+    
+    const participantIds = ride.participants.map(p => p.id);
+    if (ride.creator_id && !participantIds.includes(ride.creator_id)) {
+      participantIds.push(ride.creator_id);
+    }
+    
+    return participantIds;
+  } catch (error) {
+    console.error('Error getting ride participants:', error);
+    return [];
+  }
+}
+
+async function getGroupMembers(groupId) {
+  try {
+    const group = await Group.findByPk(groupId, {
+      include: [{
+        model: User,
+        as: 'members',
+        attributes: ['id']
+      }]
+    });
+    
+    if (!group) return [];
+    
+    const memberIds = group.members.map(m => m.id);
+    if (group.admin_id && !memberIds.includes(group.admin_id)) {
+      memberIds.push(group.admin_id);
+    }
+    
+    return memberIds;
+  } catch (error) {
+    console.error('Error getting group members:', error);
+    return [];
+  }
+}
+
+function getSocketIdByUserId(userId) {
+  // This is a simplified version - you'll need to implement proper socket tracking
+  // You might want to maintain a Map of userId -> socketId
+  const userSockets = io.sockets.adapter.rooms.get(`user:${userId}`);
+  return userSockets ? Array.from(userSockets)[0] : null;
+}
 
   // Start batch processing timer
   setInterval(processBatchedMessages, BATCH_TIMEOUT);
