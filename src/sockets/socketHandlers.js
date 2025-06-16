@@ -209,6 +209,485 @@ const socketHandlers = (io) => {
       socket.emit("left_group", { groupId });
     });
 
+    // Add this new socket event handler
+// FIXED: Sync chat list - properly handle groups and rides
+// IMPROVED: Sync chat list - send both basic chats AND recent messages in one go
+// SIMPLIFIED: Send complete chat data in one response
+socket.on('sync_chat_list', async () => {
+  try {
+    console.log(`📋 Loading complete chat data for user ${socket.userId}`);
+    
+    const completeChats = [];
+
+    // 1. Get all direct message conversations
+    console.log('📱 Loading direct messages...');
+    const directMessages = await Chat.findAll({
+      where: {
+        chat_type: 'direct',
+        [Op.or]: [
+          { sender_id: socket.userId },
+          { recipient_id: socket.userId }
+        ],
+        is_deleted: false
+      },
+      include: [
+        {
+          model: User,
+          as: 'sender',
+          attributes: ['id', 'first_name', 'last_name', 'profile_picture', 'last_active']
+        },
+        {
+          model: User,
+          as: 'recipient',
+          attributes: ['id', 'first_name', 'last_name', 'profile_picture', 'last_active']
+        }
+      ],
+      order: [['createdAt', 'DESC']],
+      limit: 200
+    });
+
+    // Group by conversation and get latest message
+    const directConversations = new Map();
+    for (const message of directMessages) {
+      const otherUser = message.sender_id === socket.userId ? message.recipient : message.sender;
+      
+      if (!directConversations.has(otherUser.id) || 
+          new Date(message.createdAt) > new Date(directConversations.get(otherUser.id).lastMessage.createdAt)) {
+        
+        // Count unread
+        const unreadCount = await Chat.count({
+          where: {
+            chat_type: 'direct',
+            sender_id: otherUser.id,
+            recipient_id: socket.userId,
+            is_read: false,
+            is_deleted: false
+          }
+        });
+
+        directConversations.set(otherUser.id, {
+          type: 'direct',
+          userId: otherUser.id,
+          userName: `${otherUser.first_name} ${otherUser.last_name}`.trim(),
+          avatar: otherUser.profile_picture,
+          isOnline: otherUser.last_active && Date.now() - new Date(otherUser.last_active).getTime() < 5 * 60 * 1000,
+          lastMessage: {
+            id: message.id,
+            message: message.message,
+            message_type: message.message_type,
+            sender_id: message.sender_id,
+            createdAt: message.createdAt,
+            is_read: message.is_read
+          },
+          unreadCount,
+          lastActivity: message.createdAt
+        });
+      }
+    }
+
+    completeChats.push(...Array.from(directConversations.values()));
+
+    // 2. Get all ride conversations
+    console.log('🚗 Loading ride messages...');
+    const rideMessages = await Chat.findAll({
+      where: {
+        chat_type: 'ride',
+        ride_id: { [Op.ne]: null },
+        is_deleted: false
+      },
+      include: [
+        {
+          model: Ride,
+          as: 'ride',
+          include: [
+            {
+              model: User,
+              as: 'creator',
+              attributes: ['id']
+            },
+            {
+              model: User,
+              as: 'participants',
+              attributes: ['id'],
+              through: { attributes: [] },
+              required: false
+            }
+          ],
+          required: true
+        }
+      ],
+      order: [['createdAt', 'DESC']],
+      limit: 200
+    });
+
+    // Group by ride and check access
+    const rideConversations = new Map();
+    for (const message of rideMessages) {
+      const ride = message.ride;
+      const isCreator = ride.creator_id === socket.userId;
+      const isParticipant = ride.participants?.some(p => p.id === socket.userId);
+      
+      if (isCreator || isParticipant) {
+        if (!rideConversations.has(ride.id) || 
+            new Date(message.createdAt) > new Date(rideConversations.get(ride.id).lastMessage.createdAt)) {
+          
+          // Count unread
+          const unreadCount = await Chat.count({
+            where: {
+              chat_type: 'ride',
+              ride_id: ride.id,
+              sender_id: { [Op.ne]: socket.userId },
+              is_read: false,
+              is_deleted: false
+            }
+          });
+
+          rideConversations.set(ride.id, {
+            type: 'ride',
+            id: ride.id,
+            title: ride.title,
+            avatar: ride.cover_image,
+            participantCount: (ride.participants?.length || 0) + 1,
+            lastMessage: {
+              id: message.id,
+              message: message.message,
+              message_type: message.message_type,
+              sender_id: message.sender_id,
+              createdAt: message.createdAt,
+              is_read: message.is_read
+            },
+            unreadCount,
+            lastActivity: message.createdAt
+          });
+        }
+      }
+    }
+
+    completeChats.push(...Array.from(rideConversations.values()));
+
+    // 3. Get all group conversations
+    console.log('👥 Loading group messages...');
+    const groupMessages = await Chat.findAll({
+      where: {
+        chat_type: 'group',
+        group_id: { [Op.ne]: null },
+        is_deleted: false
+      },
+      include: [
+        {
+          model: Group,
+          as: 'group',
+          include: [
+            {
+              model: User,
+              as: 'admin',
+              attributes: ['id']
+            },
+            {
+              model: User,
+              as: 'members',
+              attributes: ['id'],
+              through: { attributes: [] },
+              required: false
+            }
+          ],
+          required: true
+        }
+      ],
+      order: [['createdAt', 'DESC']],
+      limit: 200
+    });
+
+    // Group by group and check access
+    const groupConversations = new Map();
+    for (const message of groupMessages) {
+      const group = message.group;
+      const isAdmin = group.admin_id === socket.userId;
+      const isMember = group.members?.some(m => m.id === socket.userId);
+      
+      if (isAdmin || isMember) {
+        if (!groupConversations.has(group.id) || 
+            new Date(message.createdAt) > new Date(groupConversations.get(group.id).lastMessage.createdAt)) {
+          
+          // Count unread
+          const unreadCount = await Chat.count({
+            where: {
+              chat_type: 'group',
+              group_id: group.id,
+              sender_id: { [Op.ne]: socket.userId },
+              is_read: false,
+              is_deleted: false
+            }
+          });
+
+          groupConversations.set(group.id, {
+            type: 'group',
+            id: group.id,
+            name: group.name,
+            avatar: group.cover_image,
+            memberCount: (group.members?.length || 0) + 1,
+            lastMessage: {
+              id: message.id,
+              message: message.message,
+              message_type: message.message_type,
+              sender_id: message.sender_id,
+              createdAt: message.createdAt,
+              is_read: message.is_read
+            },
+            unreadCount,
+            lastActivity: message.createdAt
+          });
+        }
+      }
+    }
+
+    completeChats.push(...Array.from(groupConversations.values()));
+
+    // Sort by last activity
+    completeChats.sort((a, b) => new Date(b.lastActivity) - new Date(a.lastActivity));
+
+    console.log(`📤 Sending ${completeChats.length} complete chats to user ${socket.userId}:`, {
+      direct: completeChats.filter(c => c.type === 'direct').length,
+      rides: completeChats.filter(c => c.type === 'ride').length,
+      groups: completeChats.filter(c => c.type === 'group').length,
+      withMessages: completeChats.filter(c => c.lastMessage).length
+    });
+    
+    // Send everything at once as complete chats
+    socket.emit('complete_chats_loaded', completeChats);
+
+  } catch (error) {
+    console.error('Load complete chats error:', error);
+    socket.emit('sync_error', { message: 'Failed to load chats' });
+  }
+});
+
+// FIXED: Get recent conversations with proper handling for all chat types
+socket.on('get_recent_conversations', async () => {
+  try {
+    console.log(`💬 Getting recent conversations for user ${socket.userId}`);
+
+    const conversations = [];
+
+    // 1. Get recent direct messages
+    const directMessages = await Chat.findAll({
+      where: {
+        chat_type: 'direct',
+        [Op.or]: [
+          { sender_id: socket.userId },
+          { recipient_id: socket.userId }
+        ],
+        is_deleted: false
+      },
+      include: [
+        {
+          model: User,
+          as: 'sender',
+          attributes: ['id', 'first_name', 'last_name', 'profile_picture']
+        },
+        {
+          model: User,
+          as: 'recipient',
+          attributes: ['id', 'first_name', 'last_name', 'profile_picture']
+        }
+      ],
+      order: [['createdAt', 'DESC']],
+      limit: 200
+    });
+
+    // Group direct messages by conversation
+    const directConversations = new Map();
+    for (const message of directMessages) {
+      const otherUserId = message.sender_id === socket.userId 
+        ? message.recipient_id 
+        : message.sender_id;
+      
+      if (!directConversations.has(otherUserId) || 
+          new Date(message.createdAt) > new Date(directConversations.get(otherUserId).lastMessage.createdAt)) {
+        
+        // Count unread messages from this user
+        const unreadCount = await Chat.count({
+          where: {
+            chat_type: 'direct',
+            sender_id: otherUserId,
+            recipient_id: socket.userId,
+            is_read: false,
+            is_deleted: false
+          }
+        });
+
+        directConversations.set(otherUserId, {
+          type: 'direct',
+          userId: otherUserId,
+          lastMessage: {
+            id: message.id,
+            message: message.message,
+            message_type: message.message_type,
+            sender_id: message.sender_id,
+            createdAt: message.createdAt,
+            is_read: message.is_read
+          },
+          unreadCount
+        });
+      }
+    }
+
+    conversations.push(...Array.from(directConversations.values()));
+
+    // 2. Get recent ride messages
+    const rideMessages = await Chat.findAll({
+      where: {
+        chat_type: 'ride',
+        ride_id: { [Op.ne]: null },
+        is_deleted: false
+      },
+      include: [
+        {
+          model: Ride,
+          as: 'ride',
+          include: [
+            {
+              model: User,
+              as: 'participants',
+              where: { id: socket.userId },
+              required: false,
+              attributes: ['id']
+            }
+          ],
+          required: true
+        }
+      ],
+      order: [['createdAt', 'DESC']],
+      limit: 100
+    });
+
+    // Group ride messages by ride
+    const rideConversations = new Map();
+    for (const message of rideMessages) {
+      const rideId = message.ride_id;
+      
+      // Check if user has access to this ride
+      const isCreator = message.ride.creator_id === socket.userId;
+      const isParticipant = message.ride.participants?.some(p => p.id === socket.userId);
+      
+      if (isCreator || isParticipant) {
+        if (!rideConversations.has(rideId) || 
+            new Date(message.createdAt) > new Date(rideConversations.get(rideId).lastMessage.createdAt)) {
+          
+          // Count unread messages in this ride
+          const unreadCount = await Chat.count({
+            where: {
+              chat_type: 'ride',
+              ride_id: rideId,
+              sender_id: { [Op.ne]: socket.userId },
+              is_read: false,
+              is_deleted: false
+            }
+          });
+
+          rideConversations.set(rideId, {
+            type: 'ride',
+            id: rideId,
+            lastMessage: {
+              id: message.id,
+              message: message.message,
+              message_type: message.message_type,
+              sender_id: message.sender_id,
+              createdAt: message.createdAt,
+              is_read: message.is_read
+            },
+            unreadCount
+          });
+        }
+      }
+    }
+
+    conversations.push(...Array.from(rideConversations.values()));
+
+    // 3. Get recent group messages
+    const groupMessages = await Chat.findAll({
+      where: {
+        chat_type: 'group',
+        group_id: { [Op.ne]: null },
+        is_deleted: false
+      },
+      include: [
+        {
+          model: Group,
+          as: 'group',
+          include: [
+            {
+              model: User,
+              as: 'members',
+              where: { id: socket.userId },
+              required: false,
+              attributes: ['id']
+            }
+          ],
+          required: true
+        }
+      ],
+      order: [['createdAt', 'DESC']],
+      limit: 100
+    });
+
+    // Group group messages by group
+    const groupConversations = new Map();
+    for (const message of groupMessages) {
+      const groupId = message.group_id;
+      
+      // Check if user has access to this group
+      const isAdmin = message.group.admin_id === socket.userId;
+      const isMember = message.group.members?.some(m => m.id === socket.userId);
+      
+      if (isAdmin || isMember) {
+        if (!groupConversations.has(groupId) || 
+            new Date(message.createdAt) > new Date(groupConversations.get(groupId).lastMessage.createdAt)) {
+          
+          // Count unread messages in this group
+          const unreadCount = await Chat.count({
+            where: {
+              chat_type: 'group',
+              group_id: groupId,
+              sender_id: { [Op.ne]: socket.userId },
+              is_read: false,
+              is_deleted: false
+            }
+          });
+
+          groupConversations.set(groupId, {
+            type: 'group',
+            id: groupId,
+            lastMessage: {
+              id: message.id,
+              message: message.message,
+              message_type: message.message_type,
+              sender_id: message.sender_id,
+              createdAt: message.createdAt,
+              is_read: message.is_read
+            },
+            unreadCount
+          });
+        }
+      }
+    }
+
+    conversations.push(...Array.from(groupConversations.values()));
+
+    console.log(`📤 Sending ${conversations.length} recent conversations to user ${socket.userId}:`, {
+      direct: conversations.filter(c => c.type === 'direct').length,
+      rides: conversations.filter(c => c.type === 'ride').length,
+      groups: conversations.filter(c => c.type === 'group').length
+    });
+    
+    socket.emit('recent_conversations', conversations);
+
+  } catch (error) {
+    console.error('Get recent conversations error:', error);
+    socket.emit('sync_error', { message: 'Failed to get recent conversations' });
+  }
+});
+
     // OPTIMIZED: Handle sending messages with significant performance improvements
     socket.on("send_message", async (data) => {
       const startTime = Date.now();
@@ -267,14 +746,8 @@ const socketHandlers = (io) => {
             // Try Redis cache first
             connection = await cacheGet(cacheKey);
             if (!connection) {
-              connection = await UserConnection.findOne({
-                where: {
-                  user_id: socket.userId,
-                  connected_user_id: recipient_id,
-                  status: { [Op.ne]: "blocked" },
-                },
-                attributes: ["id", "status", "last_message_at"],
-              });
+               connection = await findOrCreateConnection(socket.userId, recipient_id, socket.userId);
+  
 
               if (connection) {
                 await cacheSet(cacheKey, connection, 300);
@@ -288,31 +761,8 @@ const socketHandlers = (io) => {
 
           if (!connection) {
             // Auto-create connection asynchronously
-            try {
-              connection = await UserConnection.findOrCreateConnection(
-                socket.userId,
-                recipient_id,
-                socket.userId
-              );
-              if (connection) {
-                await cacheSet(cacheKey, connection, 300);
-                connectionCache.set(cacheKey, connection);
-              }
-            } catch (error) {
-              if (
-                error.name === "SequelizeValidationError" &&
-                error.errors.some(
-                  (e) => e.validatorKey === "cannotConnectToSelf"
-                )
-              ) {
-                return socket.emit("message_error", {
-                  message: "Cannot send messages to yourself",
-                });
-              }
-              return socket.emit("message_error", {
-                message: "Failed to create connection",
-              });
-            }
+              connection = await findOrCreateConnection(socket.userId, recipient_id, socket.userId);
+  
           }
 
           roomName = `direct:${Chat.getDirectConversationId(socket.userId, recipient_id)}`;
@@ -2251,6 +2701,30 @@ socket.on('offer_fuel_help', async (data) => {
     const connectedSockets = io.sockets.adapter.rooms.get(`user:${userId}`);
     return connectedSockets && connectedSockets.size > 0;
   }
+  // Add this helper function in your socket handler
+const findOrCreateConnection = async (userId1, userId2, initiatedBy) => {
+  let connection = await UserConnection.findOne({
+    where: {
+      [Op.or]: [
+        { user_id: userId1, connected_user_id: userId2 },
+        { user_id: userId2, connected_user_id: userId1 }
+      ]
+    }
+  });
+
+  if (!connection) {
+    // Auto-create connection when first message is sent
+    connection = await UserConnection.create({
+      user_id: userId1,
+      connected_user_id: userId2,
+      initiated_by: initiatedBy,
+      status: 'accepted', // Auto-accept for messaging
+      accepted_at: new Date()
+    });
+  }
+
+  return connection;
+};
 
   // OPTIMIZATION: Batch message processing (for high-volume scenarios)
   function processBatchedMessages() {
