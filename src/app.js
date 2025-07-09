@@ -50,13 +50,8 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// 404 handler
-app.use('*', (req, res) => {
-  res.status(404).json({
-    status: 'error',
-    message: 'Route not found'
-  });
-});
+
+
 
 // Global error handler
 app.use(errorHandler);

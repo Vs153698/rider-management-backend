@@ -1,668 +1,839 @@
-// src/sockets/MainSocketManager.js
-const jwt = require('jsonwebtoken');
-const { User } = require('../models');
+// src/sockets/socketHandlers.js - Fixed version with proper chat fetching
+const HighPerformanceSocketManager = require('./SocketMangers');
+const { Chat, User, UserConnection, Group, Ride } = require('../models');
+const { Op } = require('sequelize');
+const { logger } = require('../middleware/errorHandler');
 
-// Import all handlers
-const ConnectionManager = require('./services/ConnectionManager');
-const ChatCacheService = require('./services/ChatCacheService');
-const MessageQueueService = require('./services/MessageQueueService');
-const ChatListHandler = require('./handlers/ChatListHandler');
-const MessageHandler = require('./handlers/MessageHandler');
-const PresenceHandler = require('./handlers/PresenceHandler');
-
-class MainSocketManager {
+// Extend the socket manager with specialized handlers
+class ExtendedSocketManager extends HighPerformanceSocketManager {
   constructor(io) {
-    this.io = io;
-    
-    // Initialize handlers
-    this.chatListHandler = new ChatListHandler(io);
-    this.messageHandler = new MessageHandler(io);
-    this.presenceHandler = new PresenceHandler(io);
-    
-    // Performance tracking
-    this.connectionCount = 0;
-    this.messagesPerSecond = 0;
-    this.lastMessageCount = 0;
-    this.setupPerformanceTracking();
-    
-    // Setup middleware and handlers
-    this.setupMiddleware();
-    this.setupConnectionHandlers();
-    
-    console.log('🚀 MainSocketManager initialized with all handlers');
+    super(io);
+    this.setupAdvancedHandlers();
   }
-
-  setupMiddleware() {
-    // Ultra-fast authentication middleware
-    this.io.use(async (socket, next) => {
-      const startTime = Date.now();
-      
-      try {
-        const token = socket.handshake.auth.token;
-        
-        if (!token) {
-          return next(new Error('Authentication token required'));
-        }
-
-        // Verify JWT
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        
-        // Try cache first for user data
-        let user = await ChatCacheService.getCachedUser(decoded.userId);
-        
-        if (!user) {
-          // Fallback to database with minimal fields
-          user = await User.findByPk(decoded.userId, {
-            attributes: ['id', 'first_name', 'last_name', 'profile_picture', 'last_active'],
-            raw: true
-          });
-          
-          if (!user) {
-            return next(new Error('User not found'));
-          }
-          
-          // Cache for future requests
-          await ChatCacheService.cacheUser(user.id, user);
-        }
-
-        // Attach user info to socket
-        socket.userId = user.id;
-        socket.userInfo = user;
-        
-        console.log(`🔐 Auth completed for user ${user.id} in ${Date.now() - startTime}ms`);
-        next();
-        
-      } catch (error) {
-        console.error('Authentication error:', error.message);
-        next(new Error('Authentication failed'));
-      }
-    });
-
-    // Connection timeout settings
-    this.io.engine.pingTimeout = 60000;
-    this.io.engine.pingInterval = 25000;
-  }
-
-  setupConnectionHandlers() {
+  
+  setupAdvancedHandlers() {
     this.io.on('connection', (socket) => {
-      this.handleConnection(socket);
+      this.setupUserSpecificHandlers(socket);
     });
   }
-
-  async handleConnection(socket) {
-    const startTime = Date.now();
-    
-    try {
-      const { userId, userInfo } = socket;
-      
-      // Add to connection manager
-      ConnectionManager.addConnection(userId, socket.id, userInfo);
-      
-      // Handle user online status
-      await this.presenceHandler.handleUserOnline(socket);
-      
-      this.connectionCount++;
-      
-      console.log(`✅ User ${userInfo.first_name} (${userId}) connected [${socket.id}] in ${Date.now() - startTime}ms - Total: ${this.connectionCount}`);
-      
-      // Setup all event handlers
-      this.setupChatListHandlers(socket);
-      this.setupMessageHandlers(socket);
-      this.setupPresenceHandlers(socket);
-      this.setupRoomHandlers(socket);
-      this.setupUtilityHandlers(socket);
-      
-      // Handle disconnection
-      socket.on('disconnect', () => {
-        this.handleDisconnection(socket);
-      });
-      
-      // Send connection success
-      socket.emit('connected', {
-        userId: userId,
-        timestamp: Date.now(),
-        connectionTime: Date.now() - startTime
-      });
-      
-    } catch (error) {
-      console.error('Connection handling error:', error);
-      socket.emit('connection_error', { message: 'Connection failed' });
-      socket.disconnect();
-    }
-  }
-
-  setupChatListHandlers(socket) {
-    // Ultra-fast chat list operations
-    socket.on('sync_chat_list', () => {
-      this.chatListHandler.handleSyncChatList(socket);
-    });
-    
-    socket.on('get_chat_stats', async () => {
-      const stats = await this.chatListHandler.getChatListStats(socket.userId);
-      socket.emit('chat_stats', stats);
-    });
-    
-    socket.on('refresh_chat_list', () => {
-      this.chatListHandler.forceRefreshChatList(socket.userId);
-    });
-  }
-
-  setupMessageHandlers(socket) {
-    // High-performance messaging
-    socket.on('send_message', (data) => {
-      this.messageHandler.handleSendMessage(socket, data);
-    });
-    
-    socket.on('get_messages', (data) => {
-      this.messageHandler.handleGetMessages(socket, data);
-    });
-    
-    socket.on('edit_message', (data) => {
-      this.messageHandler.handleEditMessage(socket, data);
-    });
-    
-    socket.on('delete_message', (data) => {
-      this.messageHandler.handleDeleteMessage(socket, data);
-    });
-    
-    socket.on('mark_messages_read', (data) => {
-      this.messageHandler.handleMarkMessagesRead(socket, data);
-    });
-  }
-
-  setupPresenceHandlers(socket) {
-    // Real-time presence and typing
-    socket.on('typing_start', (data) => {
-      this.presenceHandler.handleTypingStart(socket, data);
-    });
-    
-    socket.on('typing_stop', (data) => {
-      this.presenceHandler.handleTypingStop(socket, data);
-    });
-    
-    socket.on('update_status', (data) => {
-      this.presenceHandler.handleStatusUpdate(socket, data);
-    });
-    
-    socket.on('get_contacts_presence', () => {
-      this.presenceHandler.handleGetContactsPresence(socket);
-    });
-    
-    // Live location for rides
-    socket.on('update_live_location', (data) => {
-      this.presenceHandler.handleLiveLocationUpdate(socket, data);
-    });
-    
-    socket.on('get_ride_live_locations', (data) => {
-      this.presenceHandler.handleGetRideLiveLocations(socket, data);
-    });
-  }
-
-  setupRoomHandlers(socket) {
-    // Optimized room joining/leaving
-    socket.on('join_direct_conversation', async (data) => {
-      await this.handleJoinDirectConversation(socket, data);
-    });
-    
-    socket.on('leave_direct_conversation', (data) => {
-      this.handleLeaveDirectConversation(socket, data);
-    });
-    
-    socket.on('join_ride', async (data) => {
-      await this.handleJoinRide(socket, data);
-    });
-    
-    socket.on('leave_ride', (data) => {
-      this.handleLeaveRide(socket, data);
-    });
-    
-    socket.on('join_group', async (data) => {
-      await this.handleJoinGroup(socket, data);
-    });
-    
-    socket.on('leave_group', (data) => {
-      this.handleLeaveGroup(socket, data);
-    });
-  }
-
-  setupUtilityHandlers(socket) {
-    // Status and utility endpoints
-    socket.on('ping', () => {
-      socket.emit('pong', { timestamp: Date.now() });
-    });
-    
-    socket.on('get_performance_stats', () => {
-      socket.emit('performance_stats', this.getPerformanceStats());
-    });
-    
-    socket.on('heartbeat', () => {
-      // Update user activity
-      this.presenceHandler.updateLastActive(socket.userId);
-    });
-  }
-
-  // =================== ROOM MANAGEMENT ===================
-
-  async handleJoinDirectConversation(socket, data) {
-    const { otherUserId } = data;
-    
-    if (!otherUserId || otherUserId === socket.userId) {
-      return socket.emit('join_error', { message: 'Invalid user ID' });
-    }
-
-    try {
-      // Check authorization (cached)
-      const canJoin = await ConnectionManager.canJoinDirectRoom(socket.id, otherUserId);
-      
-      if (canJoin === false) {
-        return socket.emit('join_error', { message: 'Cannot join conversation' });
-      }
-
-      // Generate room key
-      const roomKey = ConnectionManager.generateDirectRoomKey(socket.userId, otherUserId);
-      
-      // Join room
-      socket.join(roomKey);
-      ConnectionManager.joinRoom(socket.id, roomKey, 'direct');
-      
-      socket.emit('joined_direct_conversation', {
-        otherUserId,
-        conversationId: roomKey,
-        status: 'success'
-      });
-      
-    } catch (error) {
-      console.error('Join direct conversation error:', error);
-      socket.emit('join_error', { message: 'Failed to join conversation' });
-    }
-  }
-
-  handleLeaveDirectConversation(socket, data) {
-    const { otherUserId } = data;
-    
-    if (!otherUserId) return;
-    
-    const roomKey = ConnectionManager.generateDirectRoomKey(socket.userId, otherUserId);
-    socket.leave(roomKey);
-    ConnectionManager.leaveRoom(socket.id, roomKey);
-    
-    socket.emit('left_direct_conversation', {
-      otherUserId,
-      conversationId: roomKey
-    });
-  }
-
-  async handleJoinRide(socket, data) {
-    const { rideId } = data;
-    
-    if (!rideId) {
-      return socket.emit('join_error', { message: 'Ride ID required' });
-    }
-
-    try {
-      // Check authorization (cached first)
-      const canJoin = await ConnectionManager.canJoinRideRoom(socket.id, rideId);
-      
-      if (canJoin === false) {
-        return socket.emit('join_error', { message: 'Not authorized to join this ride' });
-      }
-
-      if (canJoin === null) {
-        // Need DB verification
-        const ride = await require('../models').Ride.findByPk(rideId, {
-          attributes: ['id', 'creator_id'],
-          include: [{
-            model: require('../models').User,
-            as: 'participants',
-            where: { id: socket.userId },
-            required: false,
-            attributes: ['id']
-          }]
-        });
-
-        const isMember = ride && (
-          ride.creator_id === socket.userId ||
-          (ride.participants && ride.participants.length > 0)
-        );
-
-        if (!isMember) {
-          return socket.emit('join_error', { message: 'Not authorized to join this ride' });
+  
+  setupUserSpecificHandlers(socket) {
+    const requireAuth = (callback) => {
+      return (...args) => {
+        if (!socket.userId) {
+          return socket.emit('auth_error', { error: 'Authentication required' });
         }
-
-        // Cache the result
-        ChatCacheService.setRoomMembership(`ride:${rideId}`, socket.userId, true, 
-          ride.creator_id === socket.userId ? 'creator' : 'participant');
-      }
-
-      // Generate room key and join
-      const roomKey = ConnectionManager.generateRideRoomKey(rideId);
-      socket.join(roomKey);
-      ConnectionManager.joinRoom(socket.id, roomKey, 'ride');
-      
-      socket.emit('joined_ride', {
-        rideId,
-        roomKey,
-        status: 'success'
-      });
-      
-    } catch (error) {
-      console.error('Join ride error:', error);
-      socket.emit('join_error', { message: 'Failed to join ride' });
-    }
-  }
-
-  handleLeaveRide(socket, data) {
-    const { rideId } = data;
-    
-    if (!rideId) return;
-    
-    const roomKey = ConnectionManager.generateRideRoomKey(rideId);
-    socket.leave(roomKey);
-    ConnectionManager.leaveRoom(socket.id, roomKey);
-    
-    socket.emit('left_ride', { rideId });
-  }
-
-  async handleJoinGroup(socket, data) {
-    const { groupId } = data;
-    
-    if (!groupId) {
-      return socket.emit('join_error', { message: 'Group ID required' });
-    }
-
-    try {
-      // Check authorization (cached first)
-      const canJoin = await ConnectionManager.canJoinGroupRoom(socket.id, groupId);
-      
-      if (canJoin === false) {
-        return socket.emit('join_error', { message: 'Not authorized to join this group' });
-      }
-
-      if (canJoin === null) {
-        // Need DB verification
-        const group = await require('../models').Group.findByPk(groupId, {
-          attributes: ['id', 'admin_id'],
-          include: [{
-            model: require('../models').User,
-            as: 'members',
-            where: { id: socket.userId },
-            required: false,
-            attributes: ['id']
-          }]
-        });
-
-        const isMember = group && (
-          group.admin_id === socket.userId ||
-          (group.members && group.members.length > 0)
-        );
-
-        if (!isMember) {
-          return socket.emit('join_error', { message: 'Not authorized to join this group' });
-        }
-
-        // Cache the result
-        ChatCacheService.setRoomMembership(`group:${groupId}`, socket.userId, true,
-          group.admin_id === socket.userId ? 'admin' : 'member');
-      }
-
-      // Generate room key and join
-      const roomKey = ConnectionManager.generateGroupRoomKey(groupId);
-      socket.join(roomKey);
-      ConnectionManager.joinRoom(socket.id, roomKey, 'group');
-      
-      socket.emit('joined_group', {
-        groupId,
-        roomKey,
-        status: 'success'
-      });
-      
-    } catch (error) {
-      console.error('Join group error:', error);
-      socket.emit('join_error', { message: 'Failed to join group' });
-    }
-  }
-
-  handleLeaveGroup(socket, data) {
-    const { groupId } = data;
-    
-    if (!groupId) return;
-    
-    const roomKey = ConnectionManager.generateGroupRoomKey(groupId);
-    socket.leave(roomKey);
-    ConnectionManager.leaveRoom(socket.id, roomKey);
-    
-    socket.emit('left_group', { groupId });
-  }
-
-  // =================== DISCONNECTION HANDLING ===================
-
-  async handleDisconnection(socket) {
-    const startTime = Date.now();
-    
-    try {
-      const userInfo = ConnectionManager.getSocketUser(socket.id);
-      
-      if (userInfo) {
-        const { userId } = userInfo;
-        
-        // Handle user offline status
-        await this.presenceHandler.handleUserOffline(socket);
-        
-        // Remove from connection manager
-        ConnectionManager.removeConnection(socket.id);
-        
-        this.connectionCount--;
-        
-        console.log(`❌ User ${userId} disconnected [${socket.id}] in ${Date.now() - startTime}ms - Total: ${this.connectionCount}`);
-      }
-      
-    } catch (error) {
-      console.error('Disconnection handling error:', error);
-    }
-  }
-
-  // =================== PERFORMANCE TRACKING ===================
-
-  setupPerformanceTracking() {
-    // Track messages per second
-    setInterval(() => {
-      const currentMessageCount = MessageQueueService.messagesProcessed || 0;
-      this.messagesPerSecond = currentMessageCount - this.lastMessageCount;
-      this.lastMessageCount = currentMessageCount;
-    }, 1000);
-
-    // Log performance stats every 30 seconds
-    setInterval(() => {
-      const stats = this.getPerformanceStats();
-      console.log(`📊 Performance: ${stats.connections} connections, ${stats.messagesPerSecond} msg/s, ${stats.cacheHitRate} cache hit rate`);
-    }, 30000);
-  }
-
-  getPerformanceStats() {
-    return {
-      // Connection stats
-      connections: this.connectionCount,
-      totalUsers: ConnectionManager.getConnectionStats().uniqueUsers,
-      
-      // Message stats
-      messagesPerSecond: this.messagesPerSecond,
-      totalMessagesProcessed: MessageQueueService.messagesProcessed || 0,
-      
-      // Cache stats
-      cacheHitRate: ChatCacheService.getStats().hitRate,
-      
-      // Handler stats
-      chatListHandler: this.chatListHandler.getPerformanceStats?.() || {},
-      messageHandler: this.messageHandler.getPerformanceStats?.() || {},
-      presenceHandler: this.presenceHandler.getPerformanceStats?.() || {},
-      
-      // System stats
-      memoryUsage: process.memoryUsage(),
-      uptime: process.uptime(),
-      timestamp: Date.now()
-    };
-  }
-
-  // =================== ADMIN METHODS ===================
-
-  async handleAdminBroadcast(message, targetType = 'all', targetIds = []) {
-    try {
-      const broadcastData = {
-        type: 'admin_broadcast',
-        message,
-        timestamp: Date.now()
+        return callback(...args);
       };
+    };
 
-      if (targetType === 'all') {
-        this.io.emit('admin_message', broadcastData);
-      } else if (targetType === 'users' && targetIds.length > 0) {
-        targetIds.forEach(userId => {
-          const userSockets = ConnectionManager.getUserSockets(userId);
-          userSockets.forEach(socketId => {
-            this.io.to(socketId).emit('admin_message', broadcastData);
-          });
+    // Enhanced chat features
+    socket.on('react_to_message', requireAuth((data) => this.handleReactToMessage(socket, data)));
+    socket.on('edit_message', requireAuth((data) => this.handleEditMessage(socket, data)));
+    socket.on('delete_message', requireAuth((data) => this.handleDeleteMessage(socket, data)));
+    socket.on('forward_message', requireAuth((data) => this.handleForwardMessage(socket, data)));
+    
+    // Advanced friend features
+    socket.on('block_user', requireAuth((data) => this.handleBlockUser(socket, data)));
+    socket.on('unblock_user', requireAuth((data) => this.handleUnblockUser(socket, data)));
+    socket.on('remove_friend', requireAuth((data) => this.handleRemoveFriend(socket, data)));
+    socket.on('get_mutual_friends', requireAuth((data) => this.handleGetMutualFriends(socket, data)));
+    
+    // Group management
+    socket.on('create_group', requireAuth((data) => this.handleCreateGroup(socket, data)));
+    socket.on('join_group', requireAuth((data) => this.handleJoinGroup(socket, data)));
+    socket.on('leave_group', requireAuth((data) => this.handleLeaveGroup(socket, data)));
+    socket.on('invite_to_group', requireAuth((data) => this.handleInviteToGroup(socket, data)));
+    socket.on('remove_from_group', requireAuth((data) => this.handleRemoveFromGroup(socket, data)));
+    socket.on('transfer_group_admin', requireAuth((data) => this.handleTransferGroupAdmin(socket, data)));
+    
+    // Ride management
+    socket.on('create_ride', requireAuth((data) => this.handleCreateRide(socket, data)));
+    socket.on('join_ride', requireAuth((data) => this.handleJoinRide(socket, data)));
+    socket.on('leave_ride', requireAuth((data) => this.handleLeaveRide(socket, data)));
+    socket.on('update_ride_status', requireAuth((data) => this.handleUpdateRideStatus(socket, data)));
+    
+    // Advanced messaging features
+    socket.on('create_poll', requireAuth((data) => this.handleCreatePoll(socket, data)));
+    socket.on('vote_poll', requireAuth((data) => this.handleVotePoll(socket, data)));
+    socket.on('close_poll', requireAuth((data) => this.handleClosePoll(socket, data)));
+    socket.on('share_location', requireAuth((data) => this.handleShareLocation(socket, data)));
+    socket.on('send_voice_note', requireAuth((data) => this.handleSendVoiceNote(socket, data)));
+    socket.on('send_file', requireAuth((data) => this.handleSendFile(socket, data)));
+    
+    // Real-time status updates
+    socket.on('update_ride_location', requireAuth((data) => this.handleUpdateRideLocation(socket, data)));
+    socket.on('send_quick_status', requireAuth((data) => this.handleSendQuickStatus(socket, data)));
+    socket.on('send_fuel_status', requireAuth((data) => this.handleSendFuelStatus(socket, data)));
+    socket.on('create_itinerary', requireAuth((data) => this.handleCreateItinerary(socket, data)));
+    
+    // Bulk operations for performance
+    socket.on('mark_multiple_read', requireAuth((data) => this.handleMarkMultipleRead(socket, data)));
+    socket.on('archive_conversations', requireAuth((data) => this.handleArchiveConversations(socket, data)));
+    
+    // FIXED: Chat list sync handler
+    socket.on('sync_chat_list', requireAuth(() => {
+      console.log('🔄 sync_chat_list event received for socket:', socket.id);
+      this.handleSyncChatList(socket);
+    }));
+    
+    // Real-time search
+    socket.on('search_messages', requireAuth((data) => this.handleSearchMessages(socket, data)));
+    socket.on('search_users', requireAuth((data) => this.handleSearchUsers(socket, data)));
+    
+    // Presence and activity
+    socket.on('update_activity', requireAuth((data) => this.handleUpdateActivity(socket, data)));
+    socket.on('get_online_status', requireAuth((data) => this.handleGetOnlineStatus(socket, data)));
+  }
+  
+  // ==================== FIXED CHAT LIST SYNC ====================
+  
+  async handleSyncChatList(socket) {
+    try {
+      const userId = socket.userId;
+      console.log(`🔄 Starting comprehensive chat sync for user ${userId}`);
+      
+      // Get all chat types in parallel for better performance
+      const [directChats, groupChats, rideChats] = await Promise.all([
+        this.getUserDirectChats(userId),
+        this.getUserGroupChats(userId),
+        this.getUserRideChats(userId)
+      ]);
+      
+      console.log(`📊 Chat sync results for user ${userId}:`, {
+        direct: directChats.length,
+        groups: groupChats.length,
+        rides: rideChats.length
+      });
+      
+      // Combine and sort all chats
+      const allChats = [...directChats, ...groupChats, ...rideChats];
+      
+      // Sort by last activity (most recent first)
+      allChats.sort((a, b) => {
+        const timeA = a.lastMessage?.createdAt || a.lastActivity || a.updated_at;
+        const timeB = b.lastMessage?.createdAt || b.lastActivity || b.updated_at;
+        return new Date(timeB) - new Date(timeA);
+      });
+      
+      console.log(`✅ Successfully synced ${allChats.length} chats for user ${userId}`);
+      
+      // Send to client
+      socket.emit('chat_list_synced', {
+        chat_list: allChats,
+        total_count: allChats.length,
+        timestamp: new Date(),
+        sync_id: Date.now(),
+        user_id: userId,
+        breakdown: {
+          direct: directChats.length,
+          groups: groupChats.length,
+          rides: rideChats.length
+        }
+      });
+      
+    } catch (error) {
+      console.error('❌ Sync chat list error:', error);
+      socket.emit('sync_error', { 
+        error: 'Failed to sync chat list',
+        details: error.message,
+        code: 'SYNC_FAILED'
+      });
+    }
+  }
+
+  // ==================== FIXED DIRECT CHATS ====================
+  
+  async getUserDirectChats(userId) {
+    try {
+      console.log(`📱 Fetching direct chats for user ${userId}`);
+      
+      // Get all accepted friend connections
+      const friendConnections = await UserConnection.findAll({
+        where: {
+          [Op.or]: [
+            { user_id: userId, status: 'accepted' },
+            { connected_user_id: userId, status: 'accepted' }
+          ]
+        },
+        include: [
+          {
+            model: User,
+            as: 'user',
+            attributes: ['id', 'first_name', 'last_name', 'profile_picture', 'last_active', 'is_online']
+          },
+          {
+            model: User,
+            as: 'connectedUser',
+            attributes: ['id', 'first_name', 'last_name', 'profile_picture', 'last_active', 'is_online']
+          }
+        ]
+      });
+      
+      console.log(`📱 Found ${friendConnections.length} friend connections for user ${userId}`);
+      
+      if (friendConnections.length === 0) {
+        return [];
+      }
+      
+      const directChats = [];
+      const processedUserIds = new Set(); // Prevent duplicates
+      
+      for (const connection of friendConnections) {
+        const friend = connection.user_id === userId ? connection.connectedUser : connection.user;
+        
+        if (!friend || processedUserIds.has(friend.id)) {
+          continue; // Skip if already processed or invalid
+        }
+        
+        processedUserIds.add(friend.id);
+        
+        // Get last message between these users
+        const lastMessage = await Chat.findOne({
+          where: {
+            chat_type: 'direct',
+            [Op.or]: [
+              { sender_id: userId, recipient_id: friend.id },
+              { sender_id: friend.id, recipient_id: userId }
+            ],
+            is_deleted: false
+          },
+          include: [{
+            model: User,
+            as: 'sender',
+            attributes: ['id', 'first_name', 'last_name', 'profile_picture']
+          }],
+          order: [['createdAt', 'DESC']]
+        });
+        
+        // Get unread count
+        const unreadCount = await Chat.count({
+          where: {
+            chat_type: 'direct',
+            sender_id: friend.id,
+            recipient_id: userId,
+            is_read: false,
+            is_deleted: false
+          }
+        });
+        
+        // Check if friend is online
+        const isOnline = this.presenceCache.has(friend.id) && 
+                        this.presenceCache.get(friend.id).status === 'online';
+        
+        directChats.push({
+          type: 'direct',
+          id: friend.id,
+          userId: friend.id,
+          user: {
+            id: friend.id,
+            first_name: friend.first_name,
+            last_name: friend.last_name,
+            profile_picture: friend.profile_picture,
+            last_active: friend.last_active,
+            is_online: friend.is_online
+          },
+          userName: `${friend.first_name} ${friend.last_name}`.trim(),
+          name: `${friend.first_name} ${friend.last_name}`.trim(),
+          avatar: friend.profile_picture,
+          lastMessage: lastMessage ? {
+            id: lastMessage.id,
+            message: lastMessage.message,
+            message_type: lastMessage.message_type,
+            sender_id: lastMessage.sender_id,
+            sender: lastMessage.sender,
+            createdAt: lastMessage.createdAt,
+            is_read: lastMessage.is_read
+          } : null,
+          unreadCount,
+          isOnline,
+          lastActivity: lastMessage?.createdAt || connection.updated_at,
+          updated_at: lastMessage?.createdAt || connection.updated_at
         });
       }
-
-      console.log(`📢 Admin broadcast sent to ${targetType}: ${message}`);
+      
+      console.log(`✅ Processed ${directChats.length} unique direct chats for user ${userId}`);
+      return directChats;
       
     } catch (error) {
-      console.error('Admin broadcast error:', error);
+      console.error('❌ Get direct chats error:', error);
+      return [];
     }
   }
 
-  async handleSystemMaintenance(maintenanceData) {
+  // ==================== FIXED GROUP CHATS ====================
+  
+  async getUserGroupChats(userId) {
     try {
-      // Notify all connected users
-      this.io.emit('system_maintenance', {
-        ...maintenanceData,
-        timestamp: Date.now()
+      console.log(`👥 Fetching group chats for user ${userId}`);
+      
+      // Get groups where user is a member OR admin
+      const userGroups = await Group.findAll({
+        where: {
+          [Op.or]: [
+            { admin_id: userId }, // User is admin
+            { '$members.id$': userId } // User is member
+          ]
+        },
+        include: [
+          {
+            model: User,
+            as: 'members',
+            attributes: ['id'],
+            through: { attributes: [] },
+            required: false
+          },
+          {
+            model: User,
+            as: 'admin',
+            attributes: ['id', 'first_name', 'last_name', 'profile_picture'],
+            required: false
+          }
+        ]
       });
-
-      // If immediate shutdown required
-      if (maintenanceData.immediate) {
-        setTimeout(() => {
-          this.gracefulShutdown();
-        }, 5000); // 5 second grace period
+      
+      console.log(`👥 Found ${userGroups.length} groups for user ${userId}`);
+      
+      if (userGroups.length === 0) {
+        return [];
       }
-
+      
+      const groupChats = [];
+      
+      for (const group of userGroups) {
+        // Verify user is actually a member or admin
+        const isMember = group.members?.some(member => member.id === userId);
+        const isAdmin = group.admin_id === userId;
+        
+        if (!isMember && !isAdmin) {
+          console.warn(`⚠️ User ${userId} not found in group ${group.id} members`);
+          continue;
+        }
+        
+        // Get last message in group
+        const lastMessage = await Chat.findOne({
+          where: {
+            chat_type: 'group',
+            group_id: group.id,
+            is_deleted: false
+          },
+          include: [{
+            model: User,
+            as: 'sender',
+            attributes: ['id', 'first_name', 'last_name', 'profile_picture']
+          }],
+          order: [['createdAt', 'DESC']]
+        });
+        
+        // Get unread count
+        const unreadCount = await Chat.count({
+          where: {
+            chat_type: 'group',
+            group_id: group.id,
+            sender_id: { [Op.ne]: userId },
+            is_read: false,
+            is_deleted: false
+          }
+        });
+        
+        groupChats.push({
+          type: 'group',
+          id: group.id,
+          name: group.name,
+          title: group.name,
+          avatar: group.cover_image,
+          cover_image: group.cover_image,
+          lastMessage: lastMessage ? {
+            id: lastMessage.id,
+            message: lastMessage.message,
+            message_type: lastMessage.message_type,
+            sender_id: lastMessage.sender_id,
+            sender: lastMessage.sender,
+            createdAt: lastMessage.createdAt,
+            is_read: lastMessage.is_read
+          } : null,
+          unreadCount,
+          member_count: group.current_members,
+          admin_id: group.admin_id,
+          isAdmin: isAdmin,
+          lastActivity: lastMessage?.createdAt || group.updated_at,
+          updated_at: lastMessage?.createdAt || group.updated_at,
+          createdAt: group.createdAt
+        });
+      }
+      
+      console.log(`✅ Processed ${groupChats.length} group chats for user ${userId}`);
+      return groupChats;
+      
     } catch (error) {
-      console.error('System maintenance error:', error);
+      console.error('❌ Get group chats error:', error);
+      return [];
     }
   }
 
-  // =================== HEALTH CHECKS ===================
-
-  getHealthStatus() {
-    const stats = this.getPerformanceStats();
-    
-    return {
-      status: 'healthy',
-      checks: {
-        connections: {
-          status: stats.connections > 0 ? 'up' : 'down',
-          value: stats.connections
-        },
-        messageProcessing: {
-          status: MessageQueueService.isHealthy?.() ? 'up' : 'down',
-          messagesPerSecond: stats.messagesPerSecond
-        },
-        cache: {
-          status: stats.cacheHitRate !== '0%' ? 'up' : 'down',
-          hitRate: stats.cacheHitRate
-        },
-        memory: {
-          status: stats.memoryUsage.heapUsed < 1000000000 ? 'up' : 'warning', // 1GB threshold
-          heapUsed: `${Math.round(stats.memoryUsage.heapUsed / 1024 / 1024)}MB`
-        }
-      },
-      timestamp: Date.now()
-    };
-  }
-
-  // =================== GRACEFUL SHUTDOWN ===================
-
-  async gracefulShutdown() {
-    console.log('🔄 Starting graceful shutdown...');
-    
+  // ==================== FIXED RIDE CHATS ====================
+  
+  async getUserRideChats(userId) {
     try {
-      // Stop accepting new connections
-      this.io.engine.close();
+      console.log(`🚗 Fetching ride chats for user ${userId}`);
       
-      // Notify all connected clients
-      this.io.emit('server_shutting_down', {
-        message: 'Server is shutting down for maintenance',
-        timestamp: Date.now()
+      // Get rides where user is a participant OR creator
+      const userRides = await Ride.findAll({
+        where: {
+          [Op.or]: [
+            { creator_id: userId }, // User is creator
+            { '$participants.id$': userId } // User is participant
+          ]
+        },
+        include: [
+          {
+            model: User,
+            as: 'participants',
+            attributes: ['id'],
+            through: { attributes: [] },
+            required: false
+          },
+          {
+            model: User,
+            as: 'creator',
+            attributes: ['id', 'first_name', 'last_name', 'profile_picture'],
+            required: false
+          }
+        ]
       });
       
-      // Give clients time to disconnect gracefully
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      console.log(`🚗 Found ${userRides.length} rides for user ${userId}`);
       
-      // Force disconnect remaining clients
-      this.io.disconnectSockets(true);
+      if (userRides.length === 0) {
+        return [];
+      }
       
-      // Cleanup handlers
-      this.presenceHandler.cleanup();
+      const rideChats = [];
       
-      // Shutdown services
-      await MessageQueueService.shutdown();
-      await ChatCacheService.shutdown();
-      ConnectionManager.shutdown();
+      for (const ride of userRides) {
+        // Verify user is actually a participant or creator
+        const isParticipant = ride.participants?.some(participant => participant.id === userId);
+        const isCreator = ride.creator_id === userId;
+        
+        if (!isParticipant && !isCreator) {
+          console.warn(`⚠️ User ${userId} not found in ride ${ride.id} participants`);
+          continue;
+        }
+        
+        // Get last message in ride
+        const lastMessage = await Chat.findOne({
+          where: {
+            chat_type: 'ride',
+            ride_id: ride.id,
+            is_deleted: false
+          },
+          include: [{
+            model: User,
+            as: 'sender',
+            attributes: ['id', 'first_name', 'last_name', 'profile_picture']
+          }],
+          order: [['createdAt', 'DESC']]
+        });
+        
+        // Get unread count
+        const unreadCount = await Chat.count({
+          where: {
+            chat_type: 'ride',
+            ride_id: ride.id,
+            sender_id: { [Op.ne]: userId },
+            is_read: false,
+            is_deleted: false
+          }
+        });
+        
+        rideChats.push({
+          type: 'ride',
+          id: ride.id,
+          title: ride.title,
+          name: ride.title,
+          avatar: ride.cover_image,
+          cover_image: ride.cover_image,
+          lastMessage: lastMessage ? {
+            id: lastMessage.id,
+            message: lastMessage.message,
+            message_type: lastMessage.message_type,
+            sender_id: lastMessage.sender_id,
+            sender: lastMessage.sender,
+            createdAt: lastMessage.createdAt,
+            is_read: lastMessage.is_read
+          } : null,
+          unreadCount,
+          participant_count: ride.current_participants,
+          creator_id: ride.creator_id,
+          isCreator: isCreator,
+          lastActivity: lastMessage?.createdAt || ride.updated_at,
+          updated_at: lastMessage?.createdAt || ride.updated_at,
+          ride_date: ride.ride_date,
+          start_location: ride.start_location,
+          end_location: ride.end_location,
+          status: ride.status,
+          createdAt: ride.createdAt
+        });
+      }
       
-      console.log('✅ Graceful shutdown completed');
+      console.log(`✅ Processed ${rideChats.length} ride chats for user ${userId}`);
+      return rideChats;
       
     } catch (error) {
-      console.error('❌ Error during graceful shutdown:', error);
+      console.error('❌ Get ride chats error:', error);
+      return [];
     }
   }
 
-  // =================== ERROR HANDLING ===================
-
-  handleSocketError(socket, error) {
-    console.error(`Socket error for user ${socket.userId}:`, error);
-    
-    // Emit error to client
-    socket.emit('socket_error', {
-      message: 'A socket error occurred',
-      timestamp: Date.now()
+  // ==================== MESSAGE FEATURES ====================
+  
+  async handleReactToMessage(socket, data) {
+    try {
+      const { message_id, reaction } = data;
+      const userId = socket.userId;
+      
+      const message = await Chat.findByPk(message_id);
+      if (!message) {
+        return socket.emit('reaction_error', { error: 'Message not found' });
+      }
+      
+      // Verify access permissions
+      const hasAccess = await this.verifyMessageAccess(userId, message);
+      if (!hasAccess) {
+        return socket.emit('reaction_error', { error: 'Access denied' });
+      }
+      
+      // Update reactions in metadata
+      let reactions = message.metadata?.reactions || {};
+      
+      if (reactions[reaction] && reactions[reaction].includes(userId)) {
+        // Remove reaction
+        reactions[reaction] = reactions[reaction].filter(id => id !== userId);
+        if (reactions[reaction].length === 0) {
+          delete reactions[reaction];
+        }
+      } else {
+        // Add reaction
+        if (!reactions[reaction]) reactions[reaction] = [];
+        reactions[reaction].push(userId);
+      }
+      
+      await message.update({
+        metadata: { ...message.metadata, reactions }
+      });
+      
+      // Broadcast reaction update
+      const reactionData = {
+        type: 'message_reaction',
+        message_id,
+        reactions,
+        user_id: userId,
+        reaction,
+        timestamp: new Date()
+      };
+      
+      await this.broadcastToMessageParticipants(message, 'reaction_update', reactionData);
+      
+      socket.emit('reaction_success', { message_id, reactions });
+      
+    } catch (error) {
+      console.error('React to message error:', error);
+      socket.emit('reaction_error', { error: 'Failed to react to message' });
+    }
+  }
+  
+  async handleEditMessage(socket, data) {
+    try {
+      const { message_id, new_message } = data;
+      const userId = socket.userId;
+      
+      const message = await Chat.findByPk(message_id, {
+        include: [{
+          model: User,
+          as: 'sender',
+          attributes: ['id', 'first_name', 'last_name', 'profile_picture']
+        }]
+      });
+      
+      if (!message) {
+        return socket.emit('edit_error', { error: 'Message not found' });
+      }
+      
+      if (message.sender_id !== userId) {
+        return socket.emit('edit_error', { error: 'Can only edit your own messages' });
+      }
+      
+      // Check time limit (24 hours)
+      const messageAge = Date.now() - new Date(message.createdAt).getTime();
+      if (messageAge > 24 * 60 * 60 * 1000) {
+        return socket.emit('edit_error', { error: 'Cannot edit messages older than 24 hours' });
+      }
+      
+      await message.update({
+        message: new_message.trim(),
+        is_edited: true,
+        edited_at: new Date()
+      });
+      
+      const editData = {
+        type: 'message_edited',
+        message_id,
+        new_message: new_message.trim(),
+        edited_at: new Date(),
+        sender: message.sender
+      };
+      
+      await this.broadcastToMessageParticipants(message, 'message_edited', editData);
+      
+      socket.emit('edit_success', { message_id, new_message: new_message.trim() });
+      
+    } catch (error) {
+      console.error('Edit message error:', error);
+      socket.emit('edit_error', { error: 'Failed to edit message' });
+    }
+  }
+  
+  async handleDeleteMessage(socket, data) {
+    try {
+      const { message_id, delete_for_everyone = false } = data;
+      const userId = socket.userId;
+      
+      const message = await Chat.findByPk(message_id);
+      if (!message || message.sender_id !== userId) {
+        return socket.emit('delete_error', { error: 'Cannot delete this message' });
+      }
+      
+      // Check time limit for delete for everyone
+      if (delete_for_everyone) {
+        const messageAge = Date.now() - new Date(message.createdAt).getTime();
+        if (messageAge > 60 * 60 * 1000) { // 1 hour
+          return socket.emit('delete_error', { error: 'Can only delete for everyone within 1 hour' });
+        }
+      }
+      
+      await message.update({
+        is_deleted: true,
+        deleted_at: new Date(),
+        deleted_by: userId,
+        message: delete_for_everyone ? null : message.message
+      });
+      
+      const deleteData = {
+        type: 'message_deleted',
+        message_id,
+        delete_for_everyone,
+        deleted_by: userId,
+        deleted_at: new Date()
+      };
+      
+      if (delete_for_everyone) {
+        await this.broadcastToMessageParticipants(message, 'message_deleted', deleteData);
+      } else {
+        socket.emit('message_deleted', deleteData);
+      }
+      
+      socket.emit('delete_success', { message_id, delete_for_everyone });
+      
+    } catch (error) {
+      console.error('Delete message error:', error);
+      socket.emit('delete_error', { error: 'Failed to delete message' });
+    }
+  }
+  
+  // ==================== UTILITY METHODS ====================
+  
+  async verifyMessageAccess(userId, message) {
+    try {
+      switch (message.chat_type) {
+        case 'direct':
+          return message.sender_id === userId || message.recipient_id === userId;
+        case 'ride':
+          if (message.ride_id) {
+            const ride = await Ride.findByPk(message.ride_id, {
+              include: [{
+                model: User,
+                as: 'participants',
+                where: { id: userId },
+                required: false
+              }]
+            });
+            return ride && (ride.creator_id === userId || ride.participants?.some(p => p.id === userId));
+          }
+          return false;
+        case 'group':
+          if (message.group_id) {
+            const group = await Group.findByPk(message.group_id, {
+              include: [{
+                model: User,
+                as: 'members',
+                where: { id: userId },
+                required: false
+              }]
+            });
+            return group && (group.admin_id === userId || group.members?.some(m => m.id === userId));
+          }
+          return false;
+        default:
+          return false;
+      }
+    } catch (error) {
+      console.error('Access verification error:', error);
+      return false;
+    }
+  }
+  
+  async broadcastToMessageParticipants(message, event, data) {
+    switch (message.chat_type) {
+      case 'direct':
+        this.io.to(`user_${message.sender_id}`).emit(event, data);
+        if (message.recipient_id) {
+          this.io.to(`user_${message.recipient_id}`).emit(event, data);
+        }
+        break;
+      case 'ride':
+        if (message.ride_id) {
+          this.io.to(`ride_${message.ride_id}`).emit(event, data);
+        }
+        break;
+      case 'group':
+        if (message.group_id) {
+          this.io.to(`group_${message.group_id}`).emit(event, data);
+        }
+        break;
+    }
+  }
+  
+  // ==================== SEND INITIAL DATA ====================
+  
+  async sendInitialData(socket, userId) {
+    try {
+      console.log(`📤 Sending initial data to user ${userId}`);
+      
+      // Send online friends count
+      const onlineFriendsCount = await this.getOnlineFriendsCount(userId);
+      
+      // Send unread messages count
+      const totalUnread = await Chat.count({
+        where: {
+          [Op.or]: [
+            { 
+              recipient_id: userId, 
+              chat_type: 'direct',
+              is_read: false,
+              is_deleted: false
+            },
+            { 
+              chat_type: { [Op.in]: ['group', 'ride'] },
+              sender_id: { [Op.ne]: userId },
+              is_read: false,
+              is_deleted: false
+            }
+          ]
+        }
+      });
+      
+      // Send pending friend requests count
+      const pendingRequests = await UserConnection.count({
+        where: {
+          connected_user_id: userId,
+          status: 'pending'
+        }
+      });
+      
+      // Get complete chat list
+      const chatListData = await this.buildCompleteChatList(userId);
+      
+      const initialData = {
+        online_friends_count: onlineFriendsCount,
+        total_unread: totalUnread,
+        pending_requests: pendingRequests,
+        chat_list: chatListData,
+        server_time: new Date(),
+        user_id: userId
+      };
+      
+      console.log(`📊 Initial data for user ${userId}:`, {
+        chats: chatListData.length,
+        unread: totalUnread,
+        friends: onlineFriendsCount,
+        pending: pendingRequests
+      });
+      
+      socket.emit('initial_data', initialData);
+      
+      // Also emit chat_list_synced for compatibility
+      socket.emit('chat_list_synced', {
+        chat_list: chatListData,
+        total_count: chatListData.length,
+        timestamp: new Date(),
+        sync_id: Date.now(),
+        user_id: userId,
+        source: 'initial_data'
+      });
+      
+    } catch (error) {
+      console.error('❌ Send initial data error:', error);
+      socket.emit('initial_data_error', { 
+        error: 'Failed to load initial data',
+        details: error.message 
+      });
+    }
+  }
+  
+  // Build complete chat list
+  async buildCompleteChatList(userId) {
+    try {
+      console.log(`📋 Building complete chat list for user ${userId}`);
+      
+      const [directChats, groupChats, rideChats] = await Promise.all([
+        this.getUserDirectChats(userId),
+        this.getUserGroupChats(userId),
+        this.getUserRideChats(userId)
+      ]);
+      
+      const allChats = [...directChats, ...groupChats, ...rideChats];
+      
+      // Sort by last activity
+      allChats.sort((a, b) => {
+        const timeA = a.lastMessage?.createdAt || a.updated_at || a.lastActivity;
+        const timeB = b.lastMessage?.createdAt || b.updated_at || b.lastActivity;
+        return new Date(timeB) - new Date(timeA);
+      });
+      
+      console.log(`✅ Built complete chat list: ${allChats.length} chats`);
+      return allChats;
+      
+    } catch (error) {
+      console.error('❌ Error building chat list:', error);
+      return [];
+    }
+  }
+  
+  async getOnlineFriendsCount(userId) {
+    const friendConnections = await UserConnection.findAll({
+      where: {
+        [Op.or]: [
+          { user_id: userId },
+          { connected_user_id: userId }
+        ],
+        status: 'accepted'
+      }
     });
     
-    // Log for monitoring
-    this.logError('socket_error', error, { 
-      userId: socket.userId, 
-      socketId: socket.id 
-    });
-  }
-
-  logError(type, error, context = {}) {
-    const errorLog = {
-      type,
-      message: error.message,
-      stack: error.stack,
-      context,
-      timestamp: Date.now()
-    };
+    const friendIds = friendConnections.map(conn => 
+      conn.user_id === userId ? conn.connected_user_id : conn.user_id
+    );
     
-    // In production, send to error tracking service
-    console.error('🚨 Error logged:', errorLog);
-  }
-
-  // =================== MONITORING HOOKS ===================
-
-  onConnectionEstablished(callback) {
-    this.on('connection_established', callback);
-  }
-
-  onMessageProcessed(callback) {
-    MessageQueueService.on('message:processed', callback);
-  }
-
-  onPerformanceAlert(callback) {
-    this.on('performance_alert', callback);
+    return friendIds.filter(friendId => 
+      this.presenceCache.has(friendId) && 
+      this.presenceCache.get(friendId).status === 'online'
+    ).length;
   }
 }
 
-// Export factory function
-module.exports = (io) => {
-  return new MainSocketManager(io);
-};
+// Factory function to create the socket manager
+function createSocketManager(io) {
+  return new ExtendedSocketManager(io);
+}
+
+module.exports = createSocketManager;

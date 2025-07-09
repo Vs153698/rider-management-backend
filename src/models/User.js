@@ -98,6 +98,10 @@ module.exports = (sequelize) => {
       type: DataTypes.BOOLEAN,
       defaultValue: true
     },
+    is_online: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false
+    },
     last_active: {
       type: DataTypes.DATE,
       defaultValue: DataTypes.NOW
