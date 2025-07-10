@@ -27,6 +27,11 @@ class ExtendedSocketManager extends HighPerformanceSocketManager {
       };
     };
 
+     // MAIN ADDITION: Chat details via socket
+    socket.on('get_chat_messages', requireAuth((data) => this.handleGetChatMessages(socket, data)));
+    socket.on('load_more_messages', requireAuth((data) => this.handleLoadMoreMessages(socket, data)));
+    
+
     // Enhanced chat features
     socket.on('react_to_message', requireAuth((data) => this.handleReactToMessage(socket, data)));
     socket.on('edit_message', requireAuth((data) => this.handleEditMessage(socket, data)));
@@ -85,6 +90,550 @@ class ExtendedSocketManager extends HighPerformanceSocketManager {
     socket.on('update_activity', requireAuth((data) => this.handleUpdateActivity(socket, data)));
     socket.on('get_online_status', requireAuth((data) => this.handleGetOnlineStatus(socket, data)));
   }
+
+  
+  // ==================== NEW: GET CHAT MESSAGES VIA SOCKET ====================
+  
+  async handleGetChatMessages(socket, data) {
+    try {
+      const { 
+        chat_type, 
+        chat_id, 
+        recipient_id, 
+        ride_id, 
+        group_id, 
+        limit = 50, 
+        before_id = null 
+      } = data;
+      
+      const userId = socket.userId;
+      
+      console.log(`📥 Getting chat messages via socket:`, {
+        userId,
+        chat_type,
+        chat_id,
+        recipient_id,
+        ride_id,
+        group_id,
+        limit,
+        before_id
+      });
+      
+      // Validate and get messages based on chat type
+      let messages = [];
+      let hasMore = false;
+      let chatInfo = null;
+      
+      switch (chat_type) {
+        case 'direct':
+          const result = await this.getDirectMessages(userId, recipient_id || chat_id, limit, before_id);
+          messages = result.messages;
+          hasMore = result.hasMore;
+          chatInfo = result.chatInfo;
+          break;
+          
+        case 'group':
+          const groupResult = await this.getGroupMessages(userId, group_id || chat_id, limit, before_id);
+          messages = groupResult.messages;
+          hasMore = groupResult.hasMore;
+          chatInfo = groupResult.chatInfo;
+          break;
+          
+        case 'ride':
+          const rideResult = await this.getRideMessages(userId, ride_id || chat_id, limit, before_id);
+          messages = rideResult.messages;
+          hasMore = rideResult.hasMore;
+          chatInfo = rideResult.chatInfo;
+          break;
+          
+        default:
+          return socket.emit('chat_messages_error', { 
+            error: 'Invalid chat type',
+            code: 'INVALID_CHAT_TYPE'
+          });
+      }
+      
+      // Emit messages to client
+      socket.emit('chat_messages_loaded', {
+        chat_type,
+        chat_id: chat_id || recipient_id || ride_id || group_id,
+        messages,
+        hasMore,
+        chatInfo,
+        timestamp: new Date(),
+        request_id: data.request_id // For request tracking
+      });
+      
+      console.log(`✅ Sent ${messages.length} messages via socket`);
+      
+    } catch (error) {
+      console.error('❌ Get chat messages error:', error);
+      socket.emit('chat_messages_error', { 
+        error: 'Failed to load messages',
+        details: error.message,
+        code: 'LOAD_MESSAGES_FAILED'
+      });
+    }
+  }
+  
+  async handleLoadMoreMessages(socket, data) {
+    // This is the same as handleGetChatMessages but specifically for pagination
+    return this.handleGetChatMessages(socket, data);
+  }
+  
+  // ==================== MESSAGE FETCHING HELPERS ====================
+  
+async getDirectMessages(userId, otherUserId, limit, beforeId) {
+  try {
+    // Check if users are friends
+    const areFriends = await UserConnection.areFriends(userId, otherUserId);
+    if (!areFriends) {
+      throw new Error('You can only view conversations with friends');
+    }
+    
+    // Get connection info
+    const connection = await UserConnection.findOne({
+      where: {
+        [Op.or]: [
+          { user_id: userId, connected_user_id: otherUserId },
+          { user_id: otherUserId, connected_user_id: userId }
+        ],
+        status: 'accepted'
+      }
+    });
+    
+    if (!connection) {
+      throw new Error('No active conversation found');
+    }
+    
+    // Build query
+    let whereClause = {
+      chat_type: 'direct',
+      [Op.or]: [
+        { sender_id: userId, recipient_id: otherUserId },
+        { sender_id: otherUserId, recipient_id: userId }
+      ],
+      is_deleted: false
+    };
+    
+    // ✅ FIXED: Use correct field name for pagination
+    if (beforeId) {
+      const beforeMessage = await Chat.findByPk(beforeId);
+      if (beforeMessage) {
+        // Since we configured createdAt: 'created_at' in model, 
+        // Sequelize will use 'created_at' as the actual field name
+        whereClause.created_at = { [Op.lt]: beforeMessage.created_at };
+      }
+    }
+    
+    const messages = await Chat.findAll({
+      where: whereClause,
+      include: [
+        {
+          model: User,
+          as: 'sender',
+          attributes: ['id', 'first_name', 'last_name', 'profile_picture']
+        },
+        {
+          model: User,
+          as: 'recipient',
+          attributes: ['id', 'first_name', 'last_name', 'profile_picture']
+        },
+        {
+          model: Chat,
+          as: 'replyTo',
+          required: false,
+          include: [{
+            model: User,
+            as: 'sender',
+            attributes: ['id', 'first_name', 'last_name']
+          }]
+        }
+      ],
+      limit: limit,
+      order: [['created_at', 'DESC']] // ✅ FIXED: Use snake_case field name
+    });
+    
+    // Mark messages as read
+    await Chat.update(
+      { is_read: true, read_at: new Date() },
+      {
+        where: {
+          chat_type: 'direct',
+          sender_id: otherUserId,
+          recipient_id: userId,
+          is_read: false,
+          is_deleted: false
+        },
+        validate: false
+      }
+    );
+    
+    // Get other user info
+    const otherUser = await User.findByPk(otherUserId, {
+      attributes: ['id', 'first_name', 'last_name', 'profile_picture', 'last_active', 'is_online']
+    });
+    
+    return {
+      messages,
+      hasMore: messages.length === limit,
+      chatInfo: {
+        type: 'direct',
+        user: otherUser,
+        connection_status: connection.status,
+        isOnline: this.presenceCache.has(otherUserId) && 
+                 this.presenceCache.get(otherUserId).status === 'online'
+      }
+    };
+    
+  } catch (error) {
+    console.error('❌ Get direct messages error:', error);
+    throw error;
+  }
+}
+
+  
+  async getGroupMessages(userId, groupId, limit, beforeId) {
+    try {
+      // Check group access
+      const group = await Group.findByPk(groupId, {
+        include: [
+          {
+            model: User,
+            as: 'members',
+            where: { id: userId },
+            required: false
+          },
+          {
+            model: User,
+            as: 'admin',
+            attributes: ['id', 'first_name', 'last_name', 'profile_picture']
+          }
+        ]
+      });
+      
+      if (!group) {
+        throw new Error('Group not found');
+      }
+      
+      const isMember = group.members?.some(m => m.id === userId);
+      const isAdmin = group.admin_id === userId;
+      
+      if (!isMember && !isAdmin) {
+        throw new Error('Access denied to group messages');
+      }
+      
+      // Build query
+      let whereClause = {
+        group_id: groupId,
+        chat_type: 'group',
+        is_deleted: false
+      };
+      
+          if (beforeId) {
+      const beforeMessage = await Chat.findByPk(beforeId);
+      if (beforeMessage) {
+        whereClause.created_at = { [Op.lt]: beforeMessage.created_at };
+      }
+    }
+      
+      const messages = await Chat.findAll({
+        where: whereClause,
+        include: [
+          {
+            model: User,
+            as: 'sender',
+            attributes: ['id', 'first_name', 'last_name', 'profile_picture']
+          },
+          {
+            model: Chat,
+            as: 'replyTo',
+            required: false,
+            include: [{
+              model: User,
+              as: 'sender',
+              attributes: ['id', 'first_name', 'last_name']
+            }]
+          }
+        ],
+        limit: limit,
+        order: [['created_at', 'DESC']]
+      });
+      
+      // Mark messages as read
+      await Chat.update(
+        { is_read: true, read_at: new Date() },
+        {
+          where: {
+            group_id: groupId,
+            chat_type: 'group',
+            sender_id: { [Op.ne]: userId },
+            is_read: false,
+            is_deleted: false
+          },
+          validate: false
+        }
+      );
+      
+      return {
+        messages,
+        hasMore: messages.length === limit,
+        chatInfo: {
+          type: 'group',
+          group: {
+            id: group.id,
+            name: group.name,
+            cover_image: group.cover_image,
+            admin: group.admin,
+            member_count: group.current_members,
+            isAdmin: isAdmin
+          }
+        }
+      };
+      
+    } catch (error) {
+      console.error('❌ Get group messages error:', error);
+      throw error;
+    }
+  }
+  
+  async getRideMessages(userId, rideId, limit, beforeId) {
+    try {
+      // Check ride access
+      const ride = await Ride.findByPk(rideId, {
+        include: [
+          {
+            model: User,
+            as: 'participants',
+            where: { id: userId },
+            required: false
+          },
+          {
+            model: User,
+            as: 'creator',
+            attributes: ['id', 'first_name', 'last_name', 'profile_picture']
+          }
+        ]
+      });
+      
+      if (!ride) {
+        throw new Error('Ride not found');
+      }
+      
+      const isParticipant = ride.participants?.some(p => p.id === userId);
+      const isCreator = ride.creator_id === userId;
+      
+      if (!isParticipant && !isCreator) {
+        throw new Error('Access denied to ride messages');
+      }
+      
+      // Build query
+      let whereClause = {
+        ride_id: rideId,
+        chat_type: 'ride',
+        is_deleted: false
+      };
+      
+      if (beforeId) {
+      const beforeMessage = await Chat.findByPk(beforeId);
+      if (beforeMessage) {
+        whereClause.created_at = { [Op.lt]: beforeMessage.created_at };
+      }
+    }
+      
+      const messages = await Chat.findAll({
+        where: whereClause,
+        include: [
+          {
+            model: User,
+            as: 'sender',
+            attributes: ['id', 'first_name', 'last_name', 'profile_picture']
+          },
+          {
+            model: Chat,
+            as: 'replyTo',
+            required: false,
+            include: [{
+              model: User,
+              as: 'sender',
+              attributes: ['id', 'first_name', 'last_name']
+            }]
+          }
+        ],
+        limit: limit,
+        order: [['created_at', 'DESC']]
+      });
+      
+      // Mark messages as read
+      await Chat.update(
+        { is_read: true, read_at: new Date() },
+        {
+          where: {
+            ride_id: rideId,
+            chat_type: 'ride',
+            sender_id: { [Op.ne]: userId },
+            is_read: false,
+            is_deleted: false
+          },
+          validate: false
+        }
+      );
+      
+      return {
+        messages,
+        hasMore: messages.length === limit,
+        chatInfo: {
+          type: 'ride',
+          ride: {
+            id: ride.id,
+            title: ride.title,
+            cover_image: ride.cover_image,
+            creator: ride.creator,
+            participant_count: ride.current_participants,
+            isCreator: isCreator,
+            ride_date: ride.ride_date,
+            start_location: ride.start_location,
+            end_location: ride.end_location,
+            status: ride.status
+          }
+        }
+      };
+      
+    } catch (error) {
+      console.error('❌ Get ride messages error:', error);
+      throw error;
+    }
+  }
+  
+  // ==================== ENHANCED MESSAGE SENDING ====================
+  
+  async handleSendMessage(socket, data) {
+    try {
+      const { 
+        message, 
+        chat_type, 
+        recipient_id, 
+        ride_id, 
+        group_id, 
+        message_type = 'text',
+        metadata = {},
+        reply_to_id,
+        tempId // For client-side tracking
+      } = data;
+      
+      const userId = socket.userId;
+      if (!userId) return;
+      
+      // Validate message
+      if (!message && message_type === 'text') {
+        return socket.emit('message_error', { 
+          error: 'Message content required',
+          tempId
+        });
+      }
+      
+      // Check permissions based on chat type
+      const canSend = await this.validateMessagePermissions(userId, chat_type, recipient_id, ride_id, group_id);
+      if (!canSend.allowed) {
+        return socket.emit('message_error', { 
+          error: canSend.reason,
+          tempId
+        });
+      }
+      
+      // Create message in database
+      const chatMessage = await Chat.create({
+        message: message?.trim(),
+        message_type,
+        chat_type,
+        sender_id: userId,
+        recipient_id,
+        ride_id,
+        group_id,
+        reply_to_id,
+        metadata
+      });
+      
+      // Load message with user data and ensure proper structure
+      const fullMessage = await Chat.findByPk(chatMessage.id, {
+        include: [
+          {
+            model: User,
+            as: 'sender',
+            attributes: ['id', 'first_name', 'last_name', 'profile_picture']
+          },
+          {
+            model: User,
+            as: 'recipient',
+            attributes: ['id', 'first_name', 'last_name', 'profile_picture'],
+            required: false
+          },
+          {
+            model: Chat,
+            as: 'replyTo',
+            required: false,
+            include: [{
+              model: User,
+              as: 'sender',
+              attributes: ['id', 'first_name', 'last_name']
+            }]
+          }
+        ]
+      });
+      
+      // CRITICAL: Ensure consistent message structure
+      const standardizedMessage = {
+        id: fullMessage.id,
+        message: fullMessage.message,
+        message_type: fullMessage.message_type,
+        chat_type: fullMessage.chat_type,
+        sender_id: fullMessage.sender_id,
+        recipient_id: fullMessage.recipient_id,
+        ride_id: fullMessage.ride_id,
+        group_id: fullMessage.group_id,
+        reply_to_id: fullMessage.reply_to_id,
+        metadata: fullMessage.metadata,
+        is_read: fullMessage.is_read,
+        is_edited: fullMessage.is_edited,
+        is_deleted: fullMessage.is_deleted,
+        created_at: fullMessage.created_at, // ✅ Already snake_case from database
+      updated_at: fullMessage.updated_at,
+        updated_at: fullMessage.updatedAt,
+        updatedAt: fullMessage.updatedAt,
+        sender: fullMessage.sender,
+        recipient: fullMessage.recipient,
+        replyTo: fullMessage.replyTo,
+        tempId: tempId // Include tempId for client tracking
+      };
+      
+      // Broadcast to appropriate rooms
+      await this.broadcastMessageWithRedis(standardizedMessage, chat_type, recipient_id, ride_id, group_id);
+      
+      // Update chat list for all participants
+      await this.updateChatListsWithRedis(standardizedMessage, chat_type, recipient_id, ride_id, group_id);
+      
+      // Update metrics
+      this.metrics.messagesSent++;
+      
+      // Send confirmation to sender
+      socket.emit('message_sent', { 
+        success: true, 
+        message: standardizedMessage,
+        tempId: tempId,
+        timestamp: new Date()
+      });
+      
+      console.log(`✅ Message sent successfully: ${fullMessage.id}`);
+      
+    } catch (error) {
+      console.error('❌ Send message error:', error);
+      socket.emit('message_error', { 
+        error: 'Failed to send message',
+        details: error.message,
+        tempId: data.tempId
+      });
+    }
+  }
   
   // ==================== FIXED CHAT LIST SYNC ====================
   
@@ -111,8 +660,8 @@ class ExtendedSocketManager extends HighPerformanceSocketManager {
       
       // Sort by last activity (most recent first)
       allChats.sort((a, b) => {
-        const timeA = a.lastMessage?.createdAt || a.lastActivity || a.updated_at;
-        const timeB = b.lastMessage?.createdAt || b.lastActivity || b.updated_at;
+        const timeA = a.lastMessage?.created_at || a.lastActivity || a.updated_at;
+        const timeB = b.lastMessage?.created_at || b.lastActivity || b.updated_at;
         return new Date(timeB) - new Date(timeA);
       });
       
@@ -203,7 +752,7 @@ class ExtendedSocketManager extends HighPerformanceSocketManager {
             as: 'sender',
             attributes: ['id', 'first_name', 'last_name', 'profile_picture']
           }],
-          order: [['createdAt', 'DESC']]
+          order: [['created_at', 'DESC']]
         });
         
         // Get unread count
@@ -242,13 +791,13 @@ class ExtendedSocketManager extends HighPerformanceSocketManager {
             message_type: lastMessage.message_type,
             sender_id: lastMessage.sender_id,
             sender: lastMessage.sender,
-            createdAt: lastMessage.createdAt,
+            created_at: lastMessage.created_at, 
             is_read: lastMessage.is_read
           } : null,
           unreadCount,
           isOnline,
-          lastActivity: lastMessage?.createdAt || connection.updated_at,
-          updated_at: lastMessage?.createdAt || connection.updated_at
+            lastActivity: lastMessage?.created_at || connection.updated_at, // ✅ Use snake_case
+        updated_at: lastMessage?.created_at || connection.updated_at
         });
       }
       
@@ -322,7 +871,7 @@ class ExtendedSocketManager extends HighPerformanceSocketManager {
             as: 'sender',
             attributes: ['id', 'first_name', 'last_name', 'profile_picture']
           }],
-          order: [['createdAt', 'DESC']]
+          order: [['created_at', 'DESC']]
         });
         
         // Get unread count
@@ -349,16 +898,16 @@ class ExtendedSocketManager extends HighPerformanceSocketManager {
             message_type: lastMessage.message_type,
             sender_id: lastMessage.sender_id,
             sender: lastMessage.sender,
-            createdAt: lastMessage.createdAt,
+            created_at: lastMessage.created_at,
             is_read: lastMessage.is_read
           } : null,
           unreadCount,
           member_count: group.current_members,
           admin_id: group.admin_id,
           isAdmin: isAdmin,
-          lastActivity: lastMessage?.createdAt || group.updated_at,
-          updated_at: lastMessage?.createdAt || group.updated_at,
-          createdAt: group.createdAt
+          lastActivity: lastMessage?.created_at || group.updated_at,
+          updated_at: lastMessage?.created_at || group.updated_at,
+          created_at: group.created_at
         });
       }
       
@@ -432,7 +981,7 @@ class ExtendedSocketManager extends HighPerformanceSocketManager {
             as: 'sender',
             attributes: ['id', 'first_name', 'last_name', 'profile_picture']
           }],
-          order: [['createdAt', 'DESC']]
+          order: [['created_at', 'DESC']]
         });
         
         // Get unread count
@@ -459,20 +1008,20 @@ class ExtendedSocketManager extends HighPerformanceSocketManager {
             message_type: lastMessage.message_type,
             sender_id: lastMessage.sender_id,
             sender: lastMessage.sender,
-            createdAt: lastMessage.createdAt,
+            created_at: lastMessage.created_at,
             is_read: lastMessage.is_read
           } : null,
           unreadCount,
           participant_count: ride.current_participants,
           creator_id: ride.creator_id,
           isCreator: isCreator,
-          lastActivity: lastMessage?.createdAt || ride.updated_at,
-          updated_at: lastMessage?.createdAt || ride.updated_at,
+          lastActivity: lastMessage?.created_at || ride.updated_at,
+          updated_at: lastMessage?.created_at || ride.updated_at,
           ride_date: ride.ride_date,
           start_location: ride.start_location,
           end_location: ride.end_location,
           status: ride.status,
-          createdAt: ride.createdAt
+          created_at: ride.created_at
         });
       }
       
@@ -795,8 +1344,8 @@ class ExtendedSocketManager extends HighPerformanceSocketManager {
       
       // Sort by last activity
       allChats.sort((a, b) => {
-        const timeA = a.lastMessage?.createdAt || a.updated_at || a.lastActivity;
-        const timeB = b.lastMessage?.createdAt || b.updated_at || b.lastActivity;
+        const timeA = a.lastMessage?.created_at || a.updated_at || a.lastActivity;
+        const timeB = b.lastMessage?.created_at || b.updated_at || b.lastActivity;
         return new Date(timeB) - new Date(timeA);
       });
       

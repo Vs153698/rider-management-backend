@@ -783,10 +783,15 @@ async buildCompleteChatList(userId) {
     }
   }
   
-  async broadcastMessage(message, chat_type, recipient_id, ride_id, group_id) {
+ async broadcastMessage(message, chat_type, recipient_id, ride_id, group_id) {
+    // Ensure message has consistent structure
     const messageData = {
       type: 'new_message',
-      message,
+      message: {
+        ...message,
+        createdAt: message.createdAt || message.created_at,
+        updatedAt: message.updatedAt || message.updated_at
+      },
       timestamp: new Date()
     };
     

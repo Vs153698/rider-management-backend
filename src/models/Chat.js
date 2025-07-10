@@ -31,27 +31,22 @@ module.exports = (sequelize) => {
     sender_id: {
       type: DataTypes.UUID,
       allowNull: false
-      // Remove references - handle through associations in index file
     },
     recipient_id: {
       type: DataTypes.UUID,
       allowNull: true
-      // For direct messages - who is receiving the message
     },
     ride_id: {
       type: DataTypes.UUID,
       allowNull: true
-      // Remove references - handle through associations in index file
     },
     group_id: {
       type: DataTypes.UUID,
       allowNull: true
-      // Remove references - handle through associations in index file
     },
     reply_to_id: {
       type: DataTypes.UUID,
       allowNull: true
-      // Remove references - handle through associations in index file
     },
     is_edited: {
       type: DataTypes.BOOLEAN,
@@ -83,6 +78,17 @@ module.exports = (sequelize) => {
     }
   }, {
     tableName: 'chats',
+    
+    // 🔥 CRITICAL FIX: Configure timestamps to match your database
+    timestamps: true,
+    createdAt: 'created_at',  // Map camelCase to snake_case
+    updatedAt: 'updated_at',  // Map camelCase to snake_case
+    
+    // 🔥 ALTERNATIVE: If you want to keep camelCase in database
+    // timestamps: true,
+    // createdAt: 'createdAt',
+    // updatedAt: 'updatedAt',
+    
     indexes: [
       {
         fields: ['sender_id']
@@ -97,7 +103,7 @@ module.exports = (sequelize) => {
         fields: ['group_id']
       },
       {
-        fields: ['created_at']
+        fields: ['created_at']  // ✅ Make sure this matches your timestamp config
       },
       {
         fields: ['reply_to_id']
@@ -113,7 +119,7 @@ module.exports = (sequelize) => {
         fields: ['sender_id', 'recipient_id', 'chat_type']
       }
     ],
-    // FIXED: More robust validation that handles all edge cases
+    
     validate: {
       hasValidChatContext() {
         // Skip validation entirely for read operations and non-context updates
